@@ -10,6 +10,7 @@ import { BrowserUtils } from "resource://gre/modules/BrowserUtils.sys.mjs";
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   EnableDelayHelper: "resource://gre/modules/PromptUtils.sys.mjs",
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
 
 XPCOMUtils.defineLazyServiceGetter(
@@ -242,6 +243,56 @@ export class nsUnknownContentTypeDialog {
     );
   }
 
+  /**
+   * Consults the registered filename determiners (e.g. the WebExtensions
+   * downloads.onDeterminingFilename event) for a possibly-overridden target
+   * leaf name. Returns the resulting leaf name, falling back to aDefaultFile
+   * when no override is suggested or the determiner fails.
+   *
+   * @param {nsIHelperAppLauncher} aLauncher The launcher for this download.
+   * @param {nsIInterfaceRequestor} aContext The window context, used to
+   *        determine the private-browsing state.
+   * @param {string} aDefaultFile The proposed leaf name.
+   * @returns {Promise<string>} The resulting leaf name.
+   */
+  async _maybeDetermineFilename(aLauncher, aContext, aDefaultFile) {
+    let isPrivate = false;
+    try {
+      let win = aContext?.getInterface(Ci.nsIDOMWindow);
+      isPrivate = win
+        ? lazy.PrivateBrowsingUtils.isContentWindowPrivate(win)
+        : false;
+    } catch (ex) {}
+
+    try {
+      let determined = await lazy.DownloadIntegration.determineDownloadTarget(
+        {
+          source: {
+            url: aLauncher.source?.spec,
+            isPrivate,
+          },
+          contentType: aLauncher.MIMEInfo?.MIMEType,
+          target: {},
+        },
+        aDefaultFile || aLauncher.suggestedFileName || ""
+      );
+      if (determined.targetPath) {
+        // Only the leaf name is meaningful on this path; validateLeafName
+        // resolves it relative to the preferred downloads directory. Strip any
+        // directory components (subdirectories are not honored here, unlike the
+        // extension download() path) so absolute paths and traversal cannot
+        // escape the download directory.
+        let leaf = determined.targetPath.split(/[\\/]/).pop();
+        if (leaf) {
+          return leaf;
+        }
+      }
+    } catch (ex) {
+      console.error(ex);
+    }
+    return aDefaultFile;
+  }
+
   promptForSaveToFileAsync(
     aLauncher,
     aContext,
@@ -288,6 +339,21 @@ export class nsUnknownContentTypeDialog {
     }
 
     (async () => {
+      // Give onDeterminingFilename listeners (and any other registered
+      // filename determiners) the chance to override the target leaf name.
+      // This runs for both the no-prompt save-to-disk path and the Save As
+      // file picker path, so downloads not initiated by an extension go
+      // through filename determination regardless of the
+      // browser.download.useDownloadDir preference. On the picker path the
+      // determined name pre-fills the dialog, where the user can still change
+      // it. The returned name is relative to the preferred downloads
+      // directory; only its leaf is used here.
+      aDefaultFileName = await this._maybeDetermineFilename(
+        aLauncher,
+        aContext,
+        aDefaultFileName
+      );
+
       if (!aForcePrompt) {
         // Check to see if the user wishes to auto save to the default download
         // folder without prompting. Note that preference might not be set.
