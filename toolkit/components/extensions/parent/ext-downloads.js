@@ -5,13 +5,14 @@
 "use strict";
 
 ChromeUtils.defineESModuleGetters(this, {
+  DownloadIntegration: "resource://gre/modules/DownloadIntegration.sys.mjs",
   DownloadLastDir: "resource://gre/modules/DownloadLastDir.sys.mjs",
   DownloadPaths: "resource://gre/modules/DownloadPaths.sys.mjs",
   Downloads: "resource://gre/modules/Downloads.sys.mjs",
   FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
 });
 
-var { EventEmitter, ignoreEvent } = ExtensionCommon;
+var { EventEmitter } = ExtensionCommon;
 var { ExtensionError } = ExtensionUtils;
 
 const DOWNLOAD_ITEM_FIELDS = [
@@ -419,11 +420,162 @@ const DownloadMap = new (class extends EventEmitter {
     return item;
   }
 
+  // Allocates an id from the same monotonic counter used by newFromDownload,
+  // without registering a download. Used for the synthetic DownloadItem passed
+  // to onDeterminingFilename listeners before a Download object exists.
+  nextId() {
+    return ++this.currentId;
+  }
+
   async erase(item) {
     // TODO Bug 1255507: for now we only work with downloads in the DownloadList
     // from getAll()
     const list = await this.getDownloadList();
     list.remove(item.download);
+  }
+})();
+
+// Validates a relative path suggested by an onDeterminingFilename listener,
+// applying the same restrictions as downloads.download(). Returns the
+// sanitized relative path, or null if the suggestion is invalid and should be
+// ignored.
+function sanitizeSuggestedFilename(filename) {
+  if (typeof filename != "string" || !filename.length) {
+    return null;
+  }
+  if (AppConstants.platform === "win") {
+    filename = filename.replace(/\//g, "\\");
+  }
+  if (PathUtils.isAbsolute(filename)) {
+    return null;
+  }
+  filename = filename.replaceAll("%", "_");
+  let pathComponents;
+  try {
+    pathComponents = PathUtils.splitRelative(filename, {
+      allowEmpty: false,
+      allowCurrentDir: true,
+      allowParentDir: false,
+    });
+  } catch (e) {
+    return null;
+  }
+  if (!pathComponents.length || pathComponents.some(c => c == "..")) {
+    return null;
+  }
+  return pathComponents
+    .map((component, i) =>
+      DownloadPaths.sanitize(component, {
+        compressWhitespaces: false,
+        allowDirectoryNames: i < pathComponents.length - 1,
+      })
+    )
+    .join(AppConstants.platform === "win" ? "\\" : "/");
+}
+
+// Dispatches the downloads.onDeterminingFilename event to all subscribed
+// extensions and resolves the filename suggestion that should be applied.
+//
+// This is registered once with DownloadIntegration as a filename determiner,
+// so the event participates in filename determination for every download
+// routed through DownloadIntegration.determineDownloadTarget, regardless of
+// whether the download was initiated by an extension.
+const OnDeterminingFilename = new (class {
+  constructor() {
+    // Maps extension -> { fire, extension }. Each extension may register at
+    // most one onDeterminingFilename listener, matching Chrome semantics.
+    this.listeners = new Map();
+    this.registered = false;
+  }
+
+  register(extension, fire) {
+    this.listeners.set(extension, { fire, extension });
+    if (!this.registered) {
+      DownloadIntegration.addFilenameDeterminer(this.determiner);
+      this.registered = true;
+    }
+  }
+
+  unregister(extension) {
+    this.listeners.delete(extension);
+    if (!this.listeners.size && this.registered) {
+      DownloadIntegration.removeFilenameDeterminer(this.determiner);
+      this.registered = false;
+    }
+  }
+
+  // Builds the DownloadItem passed to listeners. When the Download object
+  // already exists in the map (e.g. a future native pipeline that creates the
+  // Download first) its real serialized item is used; otherwise a complete
+  // synthetic item is produced from the stand-in so that listeners always
+  // receive every DownloadItem field with sensible pre-download defaults.
+  buildItem(download) {
+    let existing = DownloadMap.byDownload.get(download);
+    if (existing) {
+      return existing.serialize();
+    }
+    let standIn = {
+      source: download.source ?? {},
+      target: download.target ?? {},
+      contentType: download.contentType,
+      startTime: download.startTime ?? null,
+      succeeded: false,
+      canceled: false,
+      stopped: false,
+      error: null,
+      hasProgress: false,
+      hasPartialData: false,
+      currentBytes: 0,
+      totalBytes: -1,
+      speed: 0,
+    };
+    let item = new DownloadItem(
+      DownloadMap.nextId(),
+      standIn,
+      download.byExtension ?? null
+    );
+    return item.serialize();
+  }
+
+  // Bound so it has a stable identity for add/removeFilenameDeterminer.
+  determiner = async ({ download }) => {
+    let suggestion = null;
+    for (let { fire, extension } of this.listeners.values()) {
+      let incognito = download.source?.isPrivate;
+      if (incognito && !extension.privateBrowsingAllowed) {
+        continue;
+      }
+      let downloadItem = this.buildItem(download);
+
+      let result = await this.fireAndCollect(fire, downloadItem);
+      if (!result) {
+        continue;
+      }
+      let filename = sanitizeSuggestedFilename(result.filename);
+      if (filename) {
+        // Last listener to suggest a filename wins.
+        suggestion = {
+          filename,
+          conflictAction: result.conflictAction,
+        };
+      }
+    }
+    return suggestion;
+  };
+
+  // Fires the event for a single listener and resolves to its suggestion.
+  // The child-side event implementation (child/ext-downloads.js) synthesizes
+  // the suggest() callback and resolves the listener's response to the
+  // suggestion object (or null). fire.async resolves to that response.
+  async fireAndCollect(fire, downloadItem) {
+    let result;
+    try {
+      result = await fire.async(downloadItem);
+    } catch (e) {
+      Cu.reportError(e);
+      return null;
+    }
+    return result && typeof result == "object" ? result : null;
   }
 })();
 
@@ -843,10 +995,42 @@ this.downloads = class extends ExtensionAPIPersistent {
               }
             }
 
+            const downloadsDir =
+              await Downloads.getPreferredDownloadsDirectory();
             let target = PathUtils.joinRelative(
-              await Downloads.getPreferredDownloadsDirectory(),
+              downloadsDir,
               filename || "download"
             );
+
+            // Give onDeterminingFilename listeners (and any other registered
+            // filename determiners) the opportunity to override the target.
+            // The proposed and returned paths are relative to the preferred
+            // downloads directory. The Download object does not exist yet, so
+            // pass a stand-in carrying the information the synthetic
+            // DownloadItem is built from.
+            const relativeTarget = filename || "download";
+            const determined =
+              await DownloadIntegration.determineDownloadTarget(
+                {
+                  source: {
+                    url: options.url,
+                    isPrivate: options.incognito,
+                    userContextId,
+                  },
+                  target: { path: target },
+                  byExtension: extension,
+                },
+                relativeTarget
+              );
+            if (determined.targetPath !== relativeTarget) {
+              target = PathUtils.joinRelative(
+                downloadsDir,
+                determined.targetPath
+              );
+            }
+            if (determined.conflictAction) {
+              options.conflictAction = determined.conflictAction;
+            }
 
             let saveAs;
             if (options.saveAs !== null) {
@@ -1275,10 +1459,21 @@ this.downloads = class extends ExtensionAPIPersistent {
           extensionApi: this,
         }).api(),
 
-        onDeterminingFilename: ignoreEvent(
+        // onDeterminingFilename blocks the download until the listener
+        // responds, so it cannot be replayed after an event page is
+        // suspended. It is therefore a non-persistent event.
+        // TODO bug 1438440: support waking a suspended event page.
+        onDeterminingFilename: new EventManager({
           context,
-          "downloads.onDeterminingFilename"
-        ),
+          name: "downloads.onDeterminingFilename",
+          inputHandling: true,
+          register: fire => {
+            OnDeterminingFilename.register(extension, fire);
+            return () => {
+              OnDeterminingFilename.unregister(extension);
+            };
+          },
+        }).api(),
       },
     };
   }
