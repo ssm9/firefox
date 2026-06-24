@@ -23,6 +23,20 @@
         "enum": ["uniquify", "overwrite", "prompt"]
       },
       {
+        "id": "FilenameSuggestion",
+        "type": "object",
+        "properties": {
+          "filename": {
+            "description": "The <a href='#type-DownloadItem'>DownloadItem</a>'s new target <a href='#property-DownloadItem-filename'>filename</a>, as a path relative to the user's default downloads directory, possibly containing subdirectories. Absolute paths, empty paths, and paths containing back-references <code>..</code> will be ignored. The <code>filename</code> is ignored completely if the listener is not the most recently registered listener to call <code>suggest()</code>.",
+            "type": "string"
+          },
+          "conflictAction": {
+            "$ref": "FilenameConflictAction",
+            "optional": true
+          }
+        }
+      },
+      {
         "id": "InterruptReason",
         "type": "string",
         "enum": [
@@ -803,6 +817,33 @@
             }
           }
         ],
+        "type": "function"
+      },
+      {
+        "name": "onDeterminingFilename",
+        "description": "During the filename determination process, extensions will be given the opportunity to override the target <a href='#type-DownloadItem'>DownloadItem.filename</a>. Each extension may not register more than one listener for this event. Each listener must call <code>suggest</code> exactly once, either synchronously or asynchronously. If the listener calls <code>suggest</code> asynchronously, then it must return <code>true</code>. If the listener neither calls <code>suggest</code> synchronously nor returns <code>true</code>, then <code>suggest</code> will be called automatically. The <a href='#type-DownloadItem'>DownloadItem</a> will not complete until all listeners have called <code>suggest</code>. Listeners may call <code>suggest</code> without any arguments in order to allow the download to use <code>downloadItem.filename</code> for its filename, or pass a <code>suggestion</code> object to <code>suggest</code> in order to override the target filename.",
+        "parameters": [
+          {
+            "$ref": "DownloadItem",
+            "name": "downloadItem"
+          },
+          {
+            "name": "suggest",
+            "type": "function",
+            "parameters": [
+              {
+                "name": "suggestion",
+                "optional": true,
+                "$ref": "FilenameSuggestion"
+              }
+            ]
+          }
+        ],
+        "returns": {
+          "type": "boolean",
+          "optional": true,
+          "description": "Return <code>true</code> when the listener will call <code>suggest</code> asynchronously."
+        },
         "type": "function"
       }
     ]
