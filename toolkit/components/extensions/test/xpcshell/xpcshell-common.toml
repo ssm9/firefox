@@ -372,6 +372,15 @@ skip-if = [
   "tsan", # Bug 1683730
 ]
 
+["test_ext_downloads_onDeterminingFilename.js"]
+run-if = [
+  "appname != 'thunderbird'",
+]
+skip-if = [
+  "os == 'android'",
+  "tsan", # Bug 1683730
+]
+
 ["test_ext_downloads_partitionKey.js"]
 skip-if = [
   "os == 'android'",
