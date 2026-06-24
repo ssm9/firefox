@@ -5,6 +5,11 @@ head = "head_downloads.js"
 
 ["test_lowMinutes.js"]
 
+["test_onDeterminingFilename_savepath.js"]
+skip-if = [
+  "os == 'android'",
+]
+
 ["test_syncedDownloadUtils.js"]
 
 ["test_unspecified_arguments.js"]
