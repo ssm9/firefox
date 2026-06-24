@@ -259,6 +259,85 @@ export var DownloadIntegration = {
   },
 
   /**
+   * Async callbacks registered to participate in determining the target
+   * filename of a download before it is committed. Each callback receives the
+   * Download object and the currently-proposed target path (relative to the
+   * preferred downloads directory) and may resolve to a new relative path and
+   * conflictAction to override it.
+   *
+   * This is the single point both the extension-initiated and the native
+   * content download pipelines route through, so that consumers such as the
+   * WebExtensions downloads.onDeterminingFilename event apply to all downloads
+   * rather than only downloads initiated through the extension API.
+   */
+  _filenameDeterminers: new Set(),
+
+  /**
+   * Registers an async callback that participates in determining the target
+   * filename of every download. Adding the same callback more than once has no
+   * additional effect.
+   *
+   * @param {function(object): Promise<?object>} determiner
+   *        Async callback invoked as determiner({ download, targetPath }) where
+   *        targetPath is the proposed path relative to the preferred downloads
+   *        directory. It should resolve to null to leave the filename
+   *        unchanged, or to an object { filename, conflictAction } where
+   *        filename is a relative path overriding the target.
+   */
+  addFilenameDeterminer(determiner) {
+    this._filenameDeterminers.add(determiner);
+  },
+
+  /**
+   * Unregisters a callback previously passed to addFilenameDeterminer.
+   *
+   * @param {function} determiner
+   *        The callback to remove.
+   */
+  removeFilenameDeterminer(determiner) {
+    this._filenameDeterminers.delete(determiner);
+  },
+
+  /**
+   * Runs the registered filename determiners against a proposed target,
+   * returning the (possibly overridden) relative path and conflictAction.
+   *
+   * Determiners are consulted in registration order and the last determiner to
+   * return a non-null override wins, mirroring the WebExtensions /
+   * chrome.downloads.onDeterminingFilename semantics where the most recently
+   * registered listener takes precedence.
+   *
+   * @param {object} download
+   *        The Download whose target is being determined.
+   * @param {string} targetPath
+   *        The proposed target path, relative to the preferred downloads
+   *        directory.
+   * @returns {Promise<object>}
+   *   Resolves to { targetPath, conflictAction } where targetPath is the
+   *   resulting relative path and conflictAction is the resulting action or
+   *   null if none was suggested.
+   */
+  async determineDownloadTarget(download, targetPath) {
+    let conflictAction = null;
+    for (let determiner of this._filenameDeterminers) {
+      let result;
+      try {
+        result = await determiner({ download, targetPath });
+      } catch (ex) {
+        console.error(ex);
+        continue;
+      }
+      if (result && result.filename) {
+        targetPath = result.filename;
+        if (result.conflictAction) {
+          conflictAction = result.conflictAction;
+        }
+      }
+    }
+    return { targetPath, conflictAction };
+  },
+
+  /**
    * Returns the system downloads directory asynchronously.
    *
    * @returns {Promise<string>}
