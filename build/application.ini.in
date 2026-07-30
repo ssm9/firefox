@@ -61,8 +61,15 @@ ServerURL=@MOZ_CRASHREPORTER_URL@/submit?id=@MOZ_APP_ID@&version=@MOZ_APP_VERSIO
 #
 # This URL is compiled into every build, so an install permanently asks the
 # host it was built with. Changing it strands existing installs on the old
-# host. It must stay byte-identical to FORK_UPDATE_HOST in
+# host. It must stay byte-identical to FORK_UPDATE_SCHEME/FORK_UPDATE_HOST in
 # tools/fork/config.sh; tools/fork/docker/build-loop.sh refuses to build if
-# the two disagree.
-URL=https://CHANGEME.ts.net/updates/%BUILD_TARGET%/%CHANNEL%/update.xml
+# they disagree.
+#
+# Plain HTTP is deliberate: this is reached over a WireGuard tunnel, which
+# already provides encryption and peer authentication, and MAR signature
+# verification -- not TLS -- is what guarantees the integrity of what gets
+# installed. Using HTTP avoids making updates depend on certificate renewal,
+# and avoids the trap that Firefox validates against NSS's own trust store, so
+# an internal CA would fail update checks with no visible error.
+URL=http://CHANGEME.lan/updates/%BUILD_TARGET%/%CHANNEL%/update.xml
 #endif

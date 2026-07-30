@@ -25,13 +25,13 @@ lets updates work at all.
 TrueNAS SCALE custom app
 ├── builder    polls upstream every 6h; on a new release, rebases the patch
 │              series, builds, signs MARs, publishes into /www
-├── web        nginx serving /www (manifests + MARs)
-└── tailscale  terminates HTTPS for <host>.<tailnet>.ts.net, proxies to web
+└── web        nginx serving /www (manifests + MARs), on host port 8088
+
+WireGuard client → nginx-proxy-manager → <nas-ip>:8088
 ```
 
-Nothing is exposed to the public internet. Clients reach the update server over
-Tailscale, so builds keep updating away from the LAN as long as the machine is
-on the tailnet.
+Nothing is exposed to the public internet. Clients reach the update server
+through the WireGuard tunnel, so builds keep updating away from the LAN.
 
 ## Scope
 
@@ -44,32 +44,58 @@ update, so seamless macOS auto-update effectively requires Developer ID plus
 notarization. Deferred until the chain is proven on the two platforms with no
 signing complications.
 
-## The hostname is permanent
+## The URL is permanent
 
-The update URL is compiled into every build. An install asks whichever host it
+The update URL is compiled into every build. An install asks whichever URL it
 was built with, forever. Changing it later strands every existing install on the
 old address, with no way to migrate them short of a manual reinstall.
 
-Use the Tailscale MagicDNS name (`nas.tail1a2b3.ts.net`), never a LAN IP. It has
-to be set identically in two places:
+Use a DNS name, never a bare IP, and pick one that resolves **over the WireGuard
+tunnel** and not only on the LAN. It has to be set identically in two places:
 
 - `build/application.ini.in` — the `URL=` line
-- `FORK_UPDATE_HOST` in the compose file
+- `FORK_UPDATE_HOST` / `FORK_UPDATE_SCHEME` in the compose file
 
 `build-loop.sh` parses the first and compares it to the second, and refuses to
-build if they disagree. That check exists because a mismatch otherwise produces
-a perfectly good build that silently never updates.
+build if they disagree. Scheme counts as much as hostname: a build compiled for
+`https` but served over `http` will never find its manifest. That check exists
+because a mismatch otherwise produces a perfectly good build that silently
+never updates.
 
 ## One-time setup
 
-### 1. Tailscale
+### 1. nginx-proxy-manager and WireGuard
 
-In the tailnet admin console (Settings > DNS), enable **MagicDNS** and **HTTPS
-Certificates**. Without HTTPS certificates the sidecar cannot get a cert and the
-update URL will not resolve.
+Add a proxy host in NPM:
 
-Generate an auth key and note what the node's name will be —
-`${TS_HOSTNAME}.<your-tailnet>.ts.net`. That is your `FORK_UPDATE_HOST`.
+| Field | Value |
+| --- | --- |
+| Domain | the name you will bake into builds, e.g. `firefox-updates.lan` |
+| Scheme | `http` |
+| Forward host | the NAS's LAN address |
+| Forward port | `8088` (`WEB_PORT` in the compose file) |
+| Cache Assets | **off** |
+| Websockets | off |
+
+**Leave "Cache Assets" off.** A cached `update.xml` means clients keep being
+offered a version they already have, or one whose MARs have been replaced. The
+origin already sends `Cache-Control: no-store` for manifests, but NPM's caching
+does not always defer to it.
+
+In the **Advanced** tab, add:
+
+```nginx
+proxy_buffering off;
+```
+
+MARs are 70–90 MB. With buffering on, NPM spools each download to disk before
+sending it, which adds latency and disk churn for no benefit.
+
+Then make sure the domain **resolves through the tunnel**. Either point the
+WireGuard client's `DNS =` at your internal resolver, or add a DNS record that
+resolves to the NPM address. `AllowedIPs` must cover the NPM host. If the name
+only resolves on the LAN, updates silently stop the moment you leave the
+network — which looks identical to "no update available".
 
 ### 2. MAR signing key
 
@@ -100,11 +126,10 @@ reinstalls by hand; there is no recovery path.
 ├── state/      toolchains, sccache, signing key, markers (~50 GB)
 ├── www/        published manifests and MARs
 ├── vs/         packaged MSVC toolchain (win64 only)
-├── tailscale/  tailscale node state
-└── config/     nginx.conf and serve.json from this directory
+└── config/     nginx.conf from this directory
 ```
 
-Copy `nginx.conf` and `tailscale-serve.json` (as `serve.json`) into `config/`.
+Copy `nginx.conf` into `config/`.
 
 ### 4. Windows toolchain
 
@@ -172,17 +197,24 @@ must be installed somewhere user-writable** — under `%LOCALAPPDATA%`, not
 `Program Files`. Installed into `Program Files`, it will download updates and
 then silently fail to apply them.
 
-## On serving updates over HTTPS
+## Why plain HTTP
 
-The updater has no hard HTTPS requirement — its own test harness runs against
+The updater has no HTTPS requirement — its own test harness runs against
 `http://localhost` (`toolkit/mozapps/update/tests/data/xpcshellUtilsAUS.js:78`),
 and there is no scheme check in `UpdateService.sys.mjs`. Integrity comes from
-the MAR signature, not from the transport.
+the MAR signature, not from the transport: an attacker who could rewrite
+responses still cannot get a MAR installed without the signing key.
 
-HTTPS is used here anyway because Tailscale provides it for free, and because
-plain HTTP would let anything on the network see and redirect update checks —
-it could not get a malicious MAR *applied*, but it could stop updates from
-happening at all.
+WireGuard already provides encryption and peer authentication for everything in
+front of it, so TLS on top would be duplicating work that is already done, while
+adding a certificate renewal that update delivery then depends on.
+
+Terminating TLS at NPM with an internal CA would be actively worse than either
+option: Firefox validates against NSS's own trust store rather than the OS one,
+so an untrusted cert makes update checks fail with no visible error. If you ever
+do want HTTPS here, use a publicly trusted certificate and set
+`FORK_UPDATE_SCHEME=https` **before** the first build — the scheme is compiled
+in and cannot be changed for installs already in the field.
 
 ## Verifying the chain
 
@@ -213,7 +245,7 @@ MAR signature against the compiled-in certificate:
 Manifest reachable at the exact path a client will ask for:
 
 ```sh
-curl https://<host>.ts.net/updates/Linux_x86_64-gcc3/ssm9/update.xml
+curl http://firefox-updates.lan/updates/Linux_x86_64-gcc3/ssm9/update.xml
 ```
 
 **The test that matters:** install release N, let it update to N+1, and confirm
@@ -254,4 +286,5 @@ stable `browser_specific_settings.gecko.id` in the extension manifest.
 - **Unofficial branding.** Firefox branding may not be used on modified builds.
 - **Complete MARs only.** Every update is a full download; no partials.
 - **No macOS** — see Scope above.
-- **Clients must be on the tailnet** to receive updates.
+- **Clients must be on the WireGuard tunnel** to receive updates, and the
+  update hostname must resolve through it.

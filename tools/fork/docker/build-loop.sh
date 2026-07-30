@@ -72,21 +72,26 @@ Without it, builds cannot be signed and installs will reject their updates."
 # wrong server and never updates. Refuse to build rather than discover that
 # weeks later.
 check_url_consistency() {
-  local baked
-  baked="$(sed -n 's|^URL=https://\([^/]*\)/updates/.*|\1|p' \
+  local baked expected
+  # [a-z]*:// rather than https\?:// -- the latter is a GNU extension and this
+  # check is worth being able to run outside the container.
+  baked="$(sed -n 's|^URL=\([a-z]*://[^/]*\)/updates/.*|\1|p' \
     "$SRC/build/application.ini.in" | head -1)"
+  expected="${FORK_UPDATE_SCHEME}://${FORK_UPDATE_HOST}"
 
   if [ -z "$baked" ]; then
     die "Could not parse the update URL out of build/application.ini.in. The \
 fork commit that rewrites it may have been lost in a rebase."
   fi
 
-  if [ "$baked" != "$FORK_UPDATE_HOST" ]; then
-    die "Update host mismatch: application.ini.in has '$baked' but \
-FORK_UPDATE_HOST is '$FORK_UPDATE_HOST'. Fix one of them before building."
+  if [ "$baked" != "$expected" ]; then
+    die "Update URL mismatch: application.ini.in has '$baked' but the \
+configuration says '$expected'. Fix one of them before building. Scheme counts \
+as much as hostname -- a build compiled for https that is served over http \
+will never find its manifest."
   fi
 
-  log "Update host: $FORK_UPDATE_HOST (matches application.ini.in)"
+  log "Update URL: $expected (matches application.ini.in)"
 }
 
 # ---------------------------------------------------------------------------

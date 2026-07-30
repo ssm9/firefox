@@ -10,37 +10,24 @@
 
 services:
   # ---------------------------------------------------------------------
-  # Tailscale: terminates HTTPS with a real cert for <host>.<tailnet>.ts.net
-  # and proxies to nginx. Nothing is exposed to the public internet.
+  # nginx: serves manifests and MARs.
   #
-  # Requires MagicDNS and HTTPS certificates enabled in the tailnet admin
-  # console (Settings > DNS). Without HTTPS certs enabled, `tailscale serve`
-  # cannot obtain a certificate and the update URL will not resolve.
-  # ---------------------------------------------------------------------
-  tailscale:
-    image: tailscale/tailscale:latest
-    container_name: firefox-fork-ts
-    hostname: ${TS_HOSTNAME:-firefox-updates}
-    restart: unless-stopped
-    environment:
-      TS_AUTHKEY: ${TS_AUTHKEY:?set TS_AUTHKEY to a tailnet auth key}
-      TS_STATE_DIR: /var/lib/tailscale
-      TS_SERVE_CONFIG: /config/serve.json
-      # Userspace networking: no TUN device and no extra capabilities needed,
-      # which matters because TrueNAS restricts what custom apps may request.
-      # Sufficient here since this node only proxies to another container.
-      TS_USERSPACE: "true"
-    volumes:
-      - /mnt/tank/firefox-fork/tailscale:/var/lib/tailscale
-      - /mnt/tank/firefox-fork/config/serve.json:/config/serve.json:ro
-
-  # ---------------------------------------------------------------------
-  # nginx: serves manifests and MARs. Only reachable through Tailscale.
+  # Sits behind nginx-proxy-manager, which is a separate TrueNAS app with its
+  # own compose network, so the two cannot reach each other by service name.
+  # Publishing a host port is the way across that boundary: point the NPM
+  # proxy host at <nas-ip>:${WEB_PORT}.
+  #
+  # This port is plain HTTP and unauthenticated. That is fine because it is
+  # only reachable on the LAN and over the WireGuard tunnel, and because MAR
+  # signature verification -- not the transport -- is what stops a malicious
+  # update from being installed. Do not forward it from the internet.
   # ---------------------------------------------------------------------
   web:
     image: nginx:alpine
     container_name: firefox-fork-web
     restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8088}:80"
     volumes:
       - /mnt/tank/firefox-fork/www:/www:ro
       - /mnt/tank/firefox-fork/config/nginx.conf:/etc/nginx/conf.d/default.conf:ro
@@ -59,10 +46,14 @@ services:
     container_name: firefox-fork-builder
     restart: unless-stopped
     environment:
-      # Compiled into every build. Must equal the host in
-      # build/application.ini.in, and must be a name that will not change --
-      # existing installs keep asking whichever host they were built with.
-      FORK_UPDATE_HOST: ${FORK_UPDATE_HOST:?set to <host>.<tailnet>.ts.net}
+      # Compiled into every build. Must match build/application.ini.in exactly,
+      # scheme included, and must be a name that will not change -- existing
+      # installs keep asking whichever URL they were built with.
+      #
+      # This is the hostname you configure in nginx-proxy-manager. It has to
+      # resolve for WireGuard clients, not just on the LAN.
+      FORK_UPDATE_HOST: ${FORK_UPDATE_HOST:?set to the hostname NPM serves}
+      FORK_UPDATE_SCHEME: ${FORK_UPDATE_SCHEME:-http}
 
       FORK_REPO: https://github.com/ssm9/firefox
       FORK_BRANCH: ssm9/fork-build
