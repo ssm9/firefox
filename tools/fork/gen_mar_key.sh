@@ -54,22 +54,27 @@ certutil -S \
   -Z SHA384 \
   -1 -2 -5 --keyUsage digitalSignature,nonRepudiation
 
-DEST=toolkit/mozapps/update/updater
+# The certificate is written next to the key rather than into the source tree.
+# The build loop copies it over toolkit/mozapps/update/updater/release_*.der
+# before each build, which keeps the branch free of per-deployment material:
+# nothing to commit, nothing to conflict on during a rebase, and no ordering
+# problem where the builder must clone a branch that already contains the
+# certificate for a key that does not exist yet.
 certutil -L -d "$FORK_NSS_DIR" -n "$FORK_MAR_CERT_NICKNAME" -r \
-  > "$DEST/release_primary.der"
+  > "$FORK_NSS_DIR/release_primary.der"
 
 # The updater accepts two certificates so a key can be rotated without
 # stranding clients: publish a build trusting both, then start signing with the
 # new one. Until there is a second key, both slots hold the same certificate.
-cp "$DEST/release_primary.der" "$DEST/release_secondary.der"
+cp "$FORK_NSS_DIR/release_primary.der" "$FORK_NSS_DIR/release_secondary.der"
 
 echo
-echo "Signing key created in $FORK_NSS_DIR"
-echo "Public certs written to $DEST/release_{primary,secondary}.der"
+echo "Signing key and certificate created in $FORK_NSS_DIR"
 echo
 echo "Next steps:"
-echo "  1. Back up $FORK_NSS_DIR offline. There is no recovery if it is lost."
-echo "  2. Commit the two .der files."
-echo "  3. For CI, store the database as a secret:"
-echo "       tar -C \"$FORK_NSS_DIR\" -cz . | base64 -w0"
-echo "     and set it as FORK_MAR_NSS_DB in the repository secrets."
+echo "  1. Back up $FORK_NSS_DIR offline. There is no recovery if it is lost:"
+echo "     an installed build only accepts MARs signed by the key compiled"
+echo "     into it, so losing this means every user reinstalls by hand."
+echo "  2. Make sure it is the build server's state volume at"
+echo "     <dataset>/state/mar-nss -- the build loop reads both the key and"
+echo "     the certificate from there."

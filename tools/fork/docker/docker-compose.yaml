@@ -52,8 +52,11 @@ services:
       #
       # This is the hostname you configure in nginx-proxy-manager. It has to
       # resolve for WireGuard clients, not just on the LAN.
-      FORK_UPDATE_HOST: ${FORK_UPDATE_HOST:?set to the hostname NPM serves}
-      FORK_UPDATE_SCHEME: ${FORK_UPDATE_SCHEME:-http}
+      FORK_UPDATE_HOST: ${FORK_UPDATE_HOST:-firefox-builds.sai.town}
+      FORK_UPDATE_SCHEME: ${FORK_UPDATE_SCHEME:-https}
+
+      # Targets to build. Drop win64 to skip the MSVC download entirely.
+      FORK_TARGETS: ${FORK_TARGETS:-linux64 win64}
 
       FORK_REPO: https://github.com/ssm9/firefox
       FORK_BRANCH: ssm9/fork-build
@@ -76,6 +79,7 @@ services:
       - /mnt/tank/firefox-fork/state:/state
       - /mnt/tank/firefox-fork/obj:/obj
       - /mnt/tank/firefox-fork/www:/www
-      # Packaged MSVC toolchain, needed only for the win64 cross-build.
-      # Leave the directory empty to build linux64 only.
-      - /mnt/tank/firefox-fork/vs:/vs:ro
+      # MSVC toolchain for the win64 cross-build. Mounted read-write because
+      # the builder downloads it from Microsoft itself on first run; leave the
+      # directory empty and it will populate.
+      - /mnt/tank/firefox-fork/vs:/vs

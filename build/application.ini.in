@@ -65,11 +65,12 @@ ServerURL=@MOZ_CRASHREPORTER_URL@/submit?id=@MOZ_APP_ID@&version=@MOZ_APP_VERSIO
 # tools/fork/config.sh; tools/fork/docker/build-loop.sh refuses to build if
 # they disagree.
 #
-# Plain HTTP is deliberate: this is reached over a WireGuard tunnel, which
-# already provides encryption and peer authentication, and MAR signature
-# verification -- not TLS -- is what guarantees the integrity of what gets
-# installed. Using HTTP avoids making updates depend on certificate renewal,
-# and avoids the trap that Firefox validates against NSS's own trust store, so
-# an internal CA would fail update checks with no visible error.
-URL=http://CHANGEME.lan/updates/%BUILD_TARGET%/%CHANNEL%/update.xml
+# TLS is terminated by nginx-proxy-manager using a publicly trusted Let's
+# Encrypt certificate. It must be publicly trusted, not an internal CA:
+# Firefox validates against NSS's own trust store rather than the OS one, so an
+# untrusted certificate makes update checks fail with no visible error.
+#
+# This does mean certificate renewal is now a dependency of updates working. If
+# renewal ever lapses, clients stop updating silently.
+URL=https://firefox-builds.sai.town/updates/%BUILD_TARGET%/%CHANNEL%/update.xml
 #endif
