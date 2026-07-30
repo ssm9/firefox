@@ -1,0 +1,90 @@
+---
+# Firefox fork build server for TrueNAS SCALE 24.10 (Electric Eel) or newer.
+#
+# Install via Apps > Discover Apps > Custom App > Install via YAML.
+#
+# Before installing, read tools/fork/README.md -- this stack will refuse to
+# start until the MAR signing key and the update hostname are in place.
+#
+# Replace every /mnt/tank/... path below with real dataset paths on your pool.
+
+services:
+  # ---------------------------------------------------------------------
+  # Tailscale: terminates HTTPS with a real cert for <host>.<tailnet>.ts.net
+  # and proxies to nginx. Nothing is exposed to the public internet.
+  #
+  # Requires MagicDNS and HTTPS certificates enabled in the tailnet admin
+  # console (Settings > DNS). Without HTTPS certs enabled, `tailscale serve`
+  # cannot obtain a certificate and the update URL will not resolve.
+  # ---------------------------------------------------------------------
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: firefox-fork-ts
+    hostname: ${TS_HOSTNAME:-firefox-updates}
+    restart: unless-stopped
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?set TS_AUTHKEY to a tailnet auth key}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      # Userspace networking: no TUN device and no extra capabilities needed,
+      # which matters because TrueNAS restricts what custom apps may request.
+      # Sufficient here since this node only proxies to another container.
+      TS_USERSPACE: "true"
+    volumes:
+      - /mnt/tank/firefox-fork/tailscale:/var/lib/tailscale
+      - /mnt/tank/firefox-fork/config/serve.json:/config/serve.json:ro
+
+  # ---------------------------------------------------------------------
+  # nginx: serves manifests and MARs. Only reachable through Tailscale.
+  # ---------------------------------------------------------------------
+  web:
+    image: nginx:alpine
+    container_name: firefox-fork-web
+    restart: unless-stopped
+    volumes:
+      - /mnt/tank/firefox-fork/www:/www:ro
+      - /mnt/tank/firefox-fork/config/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  # ---------------------------------------------------------------------
+  # builder: polls upstream and rebuilds when a new release appears.
+  #
+  # Firefox is a heavy build. Give this as many cores and as much RAM as the
+  # NAS can spare; budget ~50 GB of disk for /obj plus ~40 GB for the sccache.
+  # ---------------------------------------------------------------------
+  builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: firefox-fork-builder:latest
+    container_name: firefox-fork-builder
+    restart: unless-stopped
+    environment:
+      # Compiled into every build. Must equal the host in
+      # build/application.ini.in, and must be a name that will not change --
+      # existing installs keep asking whichever host they were built with.
+      FORK_UPDATE_HOST: ${FORK_UPDATE_HOST:?set to <host>.<tailnet>.ts.net}
+
+      FORK_REPO: https://github.com/ssm9/firefox
+      FORK_BRANCH: ssm9/fork-build
+      UPSTREAM: https://github.com/mozilla-firefox/firefox
+
+      # Upstream ships dot releases (153.0.1) on their own schedule and those
+      # are the security updates, so poll more often than the 4-week major
+      # cadence. Six hours keeps latency low without hammering GitHub.
+      POLL_INTERVAL: "21600"
+
+      # Leave unset to use all cores. Set it lower if builds starve the NAS
+      # of CPU for its actual job.
+      BUILD_JOBS: ${BUILD_JOBS:-}
+
+      # Optional: any URL that accepts a POST body, e.g. an ntfy topic.
+      # Used for "new release building", "published", and failure notices.
+      NOTIFY_URL: ${NOTIFY_URL:-}
+    volumes:
+      - /mnt/tank/firefox-fork/src:/src
+      - /mnt/tank/firefox-fork/state:/state
+      - /mnt/tank/firefox-fork/obj:/obj
+      - /mnt/tank/firefox-fork/www:/www
+      # Packaged MSVC toolchain, needed only for the win64 cross-build.
+      # Leave the directory empty to build linux64 only.
+      - /mnt/tank/firefox-fork/vs:/vs:ro
