@@ -1,0 +1,47 @@
+# Fork build configuration for win64, cross-compiled from Linux.
+#
+# Requires a packaged MSVC/SDK toolchain on the build host; see
+# tools/fork/README.md. Deliberately does not source
+# browser/config/mozconfigs/win64/common-opt (Mozilla-internal API keyfiles)
+# or common-win64 (enables the clang static-analysis plugin, which a fork
+# does not need and which costs build time).
+
+ac_add_options --target=x86_64-pc-windows-msvc
+
+ac_add_options --enable-optimize
+ac_add_options --disable-debug
+
+# Firefox branding may not be used on modified builds.
+ac_add_options --with-branding=browser/branding/unofficial
+
+ac_add_options --enable-updater
+ac_add_options --enable-update-channel=ssm9
+
+# The updater rejects any MAR whose channel ID is not in the accepted list.
+# These must match the MAR_CHANNEL_ID that tools/fork/make_mar.sh stamps in.
+export MAR_CHANNEL_ID=ssm9
+export ACCEPTED_MAR_CHANNEL_IDS=ssm9
+
+# The maintenance service refuses to apply an update unless the binary passes
+# an Authenticode check against certificates recorded in the registry
+# (toolkit/mozapps/update/common/registrycertificates.cpp:39). Fork builds are
+# not Authenticode-signed, so that check can never pass. Disable the service
+# and let updates run unelevated as the invoking user instead — which means
+# Firefox must be installed somewhere user-writable, NOT Program Files.
+ac_add_options --disable-maintenance-service
+
+# MAR signature verification is on by default and must stay that way.
+# Do NOT add --enable-unverified-updates: it would disable MAR verification
+# as well as the Authenticode check, removing the update security boundary.
+
+MOZ_REQUIRE_SIGNING=
+
+# Warm sccache is what makes release-to-release rebuilds tolerable on a single
+# machine. Conditional so this mozconfig still works without it installed.
+if command -v sccache > /dev/null 2>&1; then
+  ac_add_options --with-ccache=sccache
+fi
+
+export MOZILLA_OFFICIAL=1
+
+. "$topsrcdir/build/mozconfig.common.override"
