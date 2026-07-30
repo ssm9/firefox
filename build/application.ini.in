@@ -55,9 +55,14 @@ ServerURL=@MOZ_CRASHREPORTER_URL@/submit?id=@MOZ_APP_ID@&version=@MOZ_APP_VERSIO
 # FORK: upstream points this at aus5.mozilla.org with a path carrying
 # %BUILD_ID%, %OS_VERSION% and %SYSTEM_CAPABILITIES%. Those vary per client, so
 # that path space cannot be served as static files. This fork collapses the
-# template to (target, channel), which is a handful of static files on GitHub
-# Pages — no update server to operate. The manifest always advertises the
-# newest build; Firefox compares buildID/appVersion itself and ignores anything
-# not newer. Change the host here if the Pages repo moves.
-URL=https://ssm9.github.io/firefox-updates/%BUILD_TARGET%/%CHANNEL%/update.xml
+# template to (target, channel), which is a handful of files served by the
+# build server itself. The manifest always advertises the newest build;
+# Firefox compares buildID/appVersion itself and ignores anything not newer.
+#
+# This URL is compiled into every build, so an install permanently asks the
+# host it was built with. Changing it strands existing installs on the old
+# host. It must stay byte-identical to FORK_UPDATE_HOST in
+# tools/fork/config.sh; tools/fork/docker/build-loop.sh refuses to build if
+# the two disagree.
+URL=https://CHANGEME.ts.net/updates/%BUILD_TARGET%/%CHANNEL%/update.xml
 #endif

@@ -7,12 +7,18 @@
 export FORK_CHANNEL=ssm9
 export FORK_MAR_CHANNEL_ID=ssm9
 
-# Where update manifests are served from. Must match the URL baked into
-# build/application.ini.in.
-export FORK_UPDATE_BASE_URL=https://ssm9.github.io/firefox-updates
+# Host serving updates. Set this to the Tailscale MagicDNS name of the NAS,
+# e.g. nas.tail1a2b3.ts.net.
+#
+# This is compiled into every build via build/application.ini.in, so an install
+# permanently asks the host it was built with. Pick a name that will not change:
+# a MagicDNS name survives IP and network changes, a bare LAN IP does not.
+# build-loop.sh cross-checks this against application.ini.in and refuses to
+# build if they disagree.
+export FORK_UPDATE_HOST="${FORK_UPDATE_HOST:-CHANGEME.ts.net}"
 
-# Where MARs and installers are downloaded from by the updater.
-export FORK_RELEASE_REPO=ssm9/firefox
+export FORK_UPDATE_BASE_URL="https://${FORK_UPDATE_HOST}/updates"
+export FORK_DOWNLOAD_BASE_URL="https://${FORK_UPDATE_HOST}/downloads"
 
 # NSS database holding the MAR signing key, and the nickname of the cert
 # within it. The database itself is never committed; see README.md.
