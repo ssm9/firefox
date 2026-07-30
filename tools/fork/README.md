@@ -123,7 +123,7 @@ Easiest place to generate them is the builder container itself, which already
 has `certutil`. After the app is installed and has cloned the source:
 
 ```sh
-docker exec -it firefox-fork-builder bash -c \
+sudo docker exec -it firefox-fork-builder bash -c \
   'FORK_NSS_DIR=/state/mar-nss /src/firefox/tools/fork/gen_mar_key.sh'
 ```
 

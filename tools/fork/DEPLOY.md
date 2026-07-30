@@ -16,6 +16,25 @@ Values assumed throughout — adjust if yours differ:
 Budget about **130 GB**: ~10 GB source, ~50 GB object dirs, ~40 GB sccache,
 ~15 GB MSVC toolchain, plus published artifacts.
 
+## Before you start: `docker` needs `sudo`
+
+TrueNAS restricts `/var/run/docker.sock` to root, so plain `docker` gives:
+
+```
+permission denied while trying to connect to the Docker daemon socket
+```
+
+Every `docker` command below is written with `sudo` for that reason.
+
+Do **not** work around it by adding yourself to the `docker` group. It does not
+apply reliably on SCALE, and TrueNAS is an appliance whose system state is
+managed by middleware — hand-edited group membership does not survive updates,
+so you would be back here after the next one.
+
+Depending on how the datasets were created, `mkdir`, `git clone`, and `tar`
+below may need `sudo` too. If you hit "permission denied" on a file operation
+rather than on Docker, that is why.
+
 ---
 
 ## 1. Create the datasets
@@ -54,13 +73,13 @@ once by hand. The tag must match what the compose file references.
 
 ```sh
 cd /mnt/tank/firefox-fork/fork-config/tools/fork/docker
-docker build -t firefox-fork-builder:latest .
+sudo docker build -t firefox-fork-builder:latest .
 ```
 
 Confirm it exists:
 
 ```sh
-docker images firefox-fork-builder
+sudo docker images firefox-fork-builder
 ```
 
 ## 4. Seed the rebase base
@@ -96,7 +115,7 @@ expected**; the key does not exist yet.
 Watch it get that far:
 
 ```sh
-docker logs -f firefox-fork-builder
+sudo docker logs -f firefox-fork-builder
 ```
 
 ## 6. Generate the MAR signing key
@@ -105,7 +124,7 @@ Now that the source is cloned, generate the key inside the builder, which
 already has `certutil`:
 
 ```sh
-docker exec -it firefox-fork-builder bash -c \
+sudo docker exec -it firefox-fork-builder bash -c \
   'FORK_NSS_DIR=/state/mar-nss /src/firefox/tools/fork/gen_mar_key.sh'
 ```
 
@@ -125,7 +144,7 @@ lose this, every install has to be replaced by hand. There is no recovery path.
 Restart the app so the loop picks it up:
 
 ```sh
-docker restart firefox-fork-builder
+sudo docker restart firefox-fork-builder
 ```
 
 ## 7. Configure nginx-proxy-manager
@@ -179,8 +198,8 @@ Trigger a single cycle instead of waiting for the 6-hour poll, so you can watch
 it end to end:
 
 ```sh
-docker stop firefox-fork-builder
-docker run --rm -it \
+sudo docker stop firefox-fork-builder
+sudo docker run --rm -it \
   -e RUN_ONCE=1 \
   -e FORK_UPDATE_HOST=firefox-builds.sai.town \
   -e FORK_UPDATE_SCHEME=https \
@@ -220,7 +239,7 @@ unzip -l /mnt/tank/firefox-fork/obj/obj-fork-linux64/dist/firefox/omni.ja \
 MAR signature against the certificate compiled into the updater:
 
 ```sh
-docker exec -it firefox-fork-builder \
+sudo docker exec -it firefox-fork-builder \
   /obj/obj-fork-linux64/dist/host/bin/signmar \
   -D /src/firefox/toolkit/mozapps/update/updater/release_primary.der \
   -v /www/downloads/<version>/firefox-<version>.linux64.complete.mar
@@ -242,11 +261,11 @@ this is the entire reason the pipeline exists.
 ```sh
 # What is it doing?
 curl https://firefox-builds.sai.town/status.json
-docker logs --tail 50 firefox-fork-builder
+sudo docker logs --tail 50 firefox-fork-builder
 
 # Force a rebuild of the current release
 rm /mnt/tank/firefox-fork/state/last-built
-docker restart firefox-fork-builder
+sudo docker restart firefox-fork-builder
 ```
 
 To pick up changes to the pipeline scripts, pull in `fork-config`, rebuild the
