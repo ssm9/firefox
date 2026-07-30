@@ -39,9 +39,10 @@ services:
   # NAS can spare; budget ~50 GB of disk for /obj plus ~40 GB for the sccache.
   # ---------------------------------------------------------------------
   builder:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # Built by hand on the NAS rather than declared with `build:` -- TrueNAS's
+    # "Install via YAML" pulls images and does not reliably run a build step.
+    # See DEPLOY.md; the tag must already exist locally or the app will fail to
+    # start with an image-not-found error.
     image: firefox-fork-builder:latest
     container_name: firefox-fork-builder
     restart: unless-stopped

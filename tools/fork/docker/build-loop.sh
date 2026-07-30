@@ -23,7 +23,11 @@ export SCCACHE_DIR=/state/sccache
 export FORK_NSS_DIR=/state/mar-nss
 
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
-die() { log "FATAL: $*"; exit 1; }
+
+# Pause before exiting. The container restarts automatically, and every fatal
+# error here is a misconfiguration that needs a human, so exiting immediately
+# would spin the container and bury the message in restart noise.
+die() { log "FATAL: $*"; sleep 60; exit 1; }
 
 notify() {
   local msg="$1"

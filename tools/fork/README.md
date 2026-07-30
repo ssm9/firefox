@@ -6,6 +6,9 @@ resulting updates to its own builds.
 
 Runs as a TrueNAS SCALE app (24.10 Electric Eel or newer, which uses Docker).
 
+**To stand it up, follow [DEPLOY.md](DEPLOY.md).** This file covers what the
+pieces are and why they work the way they do.
+
 ## Why it is built this way
 
 Mozilla's updater only accepts MARs signed by keys compiled into the binary
