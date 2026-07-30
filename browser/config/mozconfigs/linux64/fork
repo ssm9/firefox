@@ -1,0 +1,39 @@
+# Fork build configuration for linux64.
+#
+# Deliberately does not source browser/config/mozconfigs/linux64/common-opt:
+# that file requires Mozilla-internal API keyfiles under /builds which a fork
+# can neither obtain nor legitimately use.
+
+. "$topsrcdir/build/unix/mozconfig.linux"
+
+ac_add_options --enable-optimize
+ac_add_options --disable-debug
+
+# Firefox branding may not be used on modified builds.
+ac_add_options --with-branding=browser/branding/unofficial
+
+ac_add_options --enable-updater
+ac_add_options --enable-update-channel=ssm9
+
+# The updater rejects any MAR whose channel ID is not in the accepted list.
+# These must match the MAR_CHANNEL_ID that tools/fork/make_mar.sh stamps in.
+export MAR_CHANNEL_ID=ssm9
+export ACCEPTED_MAR_CHANNEL_IDS=ssm9
+
+# MAR signature verification is on by default and must stay that way: it is the
+# only thing preventing a third party from serving updates to these builds.
+# Do NOT add --enable-unverified-updates.
+
+# Extensions are AMO-signed, but leaving enforcement off keeps locally built
+# unsigned copies of the extension loadable during development.
+MOZ_REQUIRE_SIGNING=
+
+# Warm sccache is what makes release-to-release rebuilds tolerable on a single
+# machine. Conditional so this mozconfig still works without it installed.
+if command -v sccache > /dev/null 2>&1; then
+  ac_add_options --with-ccache=sccache
+fi
+
+export MOZILLA_OFFICIAL=1
+
+. "$topsrcdir/build/mozconfig.common.override"
