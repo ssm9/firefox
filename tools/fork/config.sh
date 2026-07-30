@@ -7,18 +7,20 @@
 export FORK_CHANNEL=ssm9
 export FORK_MAR_CHANNEL_ID=ssm9
 
-# Host serving updates. Set this to the Tailscale MagicDNS name of the NAS,
-# e.g. nas.tail1a2b3.ts.net.
+# Hostname nginx-proxy-manager serves this under, reached over WireGuard.
 #
 # This is compiled into every build via build/application.ini.in, so an install
-# permanently asks the host it was built with. Pick a name that will not change:
-# a MagicDNS name survives IP and network changes, a bare LAN IP does not.
-# build-loop.sh cross-checks this against application.ini.in and refuses to
-# build if they disagree.
-export FORK_UPDATE_HOST="${FORK_UPDATE_HOST:-CHANGEME.ts.net}"
+# permanently asks the host it was built with. Pick a name that will not
+# change, and make sure it resolves for WireGuard clients -- a name that only
+# resolves on the LAN means updates stop working the moment you leave.
+#
+# build-loop.sh cross-checks both of these against application.ini.in and
+# refuses to build if they disagree.
+export FORK_UPDATE_SCHEME="${FORK_UPDATE_SCHEME:-http}"
+export FORK_UPDATE_HOST="${FORK_UPDATE_HOST:-CHANGEME.lan}"
 
-export FORK_UPDATE_BASE_URL="https://${FORK_UPDATE_HOST}/updates"
-export FORK_DOWNLOAD_BASE_URL="https://${FORK_UPDATE_HOST}/downloads"
+export FORK_UPDATE_BASE_URL="${FORK_UPDATE_SCHEME}://${FORK_UPDATE_HOST}/updates"
+export FORK_DOWNLOAD_BASE_URL="${FORK_UPDATE_SCHEME}://${FORK_UPDATE_HOST}/downloads"
 
 # NSS database holding the MAR signing key, and the nickname of the cert
 # within it. The database itself is never committed; see README.md.
