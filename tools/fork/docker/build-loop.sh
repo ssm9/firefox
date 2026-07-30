@@ -60,10 +60,11 @@ Tailscale MagicDNS name of this machine in the compose file. It is compiled \
 into every build and cannot be changed afterwards without stranding installs."
   fi
 
-  if [ ! -d "$FORK_NSS_DIR" ]; then
-    die "No MAR signing key at $FORK_NSS_DIR. Generate one with \
-tools/fork/gen_mar_key.sh and copy the NSS database onto the state volume. \
-Without it, builds cannot be signed and installs will reject their updates."
+  if [ ! -d "$FORK_NSS_DIR" ] || [ ! -s "$FORK_NSS_DIR/release_primary.der" ]; then
+    die "No MAR signing key and certificate at $FORK_NSS_DIR. Generate them \
+with tools/fork/gen_mar_key.sh and put the whole directory on the state \
+volume. Without them, builds cannot be signed and installs would reject their \
+own updates."
   fi
 }
 
@@ -92,6 +93,26 @@ will never find its manifest."
   fi
 
   log "Update URL: $expected (matches application.ini.in)"
+}
+
+# The certificate compiled into the updater decides which MARs an install will
+# accept. It lives on the state volume rather than in git, so it has to be
+# copied in after every rebase -- the rebase restores upstream's files, which
+# are Mozilla's real release certificates. Building against those would produce
+# installs that reject their own updates.
+install_mar_cert() {
+  local dest="$SRC/toolkit/mozapps/update/updater"
+  local n
+
+  for n in release_primary release_secondary; do
+    if [ ! -s "$FORK_NSS_DIR/$n.der" ]; then
+      die "Missing $FORK_NSS_DIR/$n.der. Generate the signing key with \
+tools/fork/gen_mar_key.sh and put its output on the state volume."
+    fi
+    cp -f "$FORK_NSS_DIR/$n.der" "$dest/$n.der" || die "could not install $n.der"
+  done
+
+  log "Installed fork MAR certificates over upstream's"
 }
 
 # ---------------------------------------------------------------------------
@@ -165,6 +186,35 @@ $STATE/fork-base"
 # Build
 # ---------------------------------------------------------------------------
 
+# The MSVC toolchain needed to cross-compile Windows cannot be redistributed by
+# Mozilla, but it can be fetched straight from Microsoft on Linux: vsdownload is
+# vendored at third_party/python/vsdownload and get_vs.py handles the
+# non-Windows extraction layout. No Windows machine or Visual Studio install is
+# involved. Downloading it means accepting Microsoft's Build Tools licence.
+ensure_vs() {
+  if [ -n "$(ls -A /vs 2>/dev/null)" ]; then
+    return 0
+  fi
+
+  if [ ! -w /vs ]; then
+    log "ERROR: /vs is empty and not writable, so the MSVC toolchain cannot \
+be fetched. Mount it read-write, or drop win64 from FORK_TARGETS."
+    return 1
+  fi
+
+  log "Fetching the MSVC toolchain into /vs (first run only, several GB)"
+  cd "$SRC" || return 1
+  ./mach python --virtualenv build \
+    taskcluster/scripts/misc/get_vs.py build/vs/vs2026.yaml /vs || {
+      log "ERROR: fetching the MSVC toolchain failed"
+      # A half-written toolchain is worse than none: it would fail the build in
+      # confusing ways every cycle rather than being retried cleanly.
+      rm -rf /vs/* 2>/dev/null || true
+      return 1
+    }
+  log "MSVC toolchain ready"
+}
+
 build_target() {
   local target="$1"
   cd "$SRC" || die "cannot enter $SRC"
@@ -174,11 +224,7 @@ build_target() {
   [ -n "$BUILD_JOBS" ] && export MOZ_MAKE_FLAGS="-j$BUILD_JOBS"
 
   if [ "$target" = "win64" ]; then
-    if [ ! -d /vs ] || [ -z "$(ls -A /vs 2>/dev/null)" ]; then
-      log "ERROR: /vs is empty; the packaged MSVC toolchain is required to \
-cross-compile win64. See tools/fork/README.md."
-      return 1
-    fi
+    ensure_vs || return 1
     export VSPATH=/vs
   fi
 
@@ -266,6 +312,7 @@ $STATE/fork-base."
   fi
 
   check_url_consistency
+  install_mar_cert
   ensure_bootstrap
 
   rm -rf /tmp/fork-artifacts

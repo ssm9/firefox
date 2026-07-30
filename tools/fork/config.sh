@@ -16,8 +16,8 @@ export FORK_MAR_CHANNEL_ID=ssm9
 #
 # build-loop.sh cross-checks both of these against application.ini.in and
 # refuses to build if they disagree.
-export FORK_UPDATE_SCHEME="${FORK_UPDATE_SCHEME:-http}"
-export FORK_UPDATE_HOST="${FORK_UPDATE_HOST:-CHANGEME.lan}"
+export FORK_UPDATE_SCHEME="${FORK_UPDATE_SCHEME:-https}"
+export FORK_UPDATE_HOST="${FORK_UPDATE_HOST:-firefox-builds.sai.town}"
 
 export FORK_UPDATE_BASE_URL="${FORK_UPDATE_SCHEME}://${FORK_UPDATE_HOST}/updates"
 export FORK_DOWNLOAD_BASE_URL="${FORK_UPDATE_SCHEME}://${FORK_UPDATE_HOST}/downloads"
@@ -28,7 +28,8 @@ export FORK_NSS_DIR="${FORK_NSS_DIR:-$HOME/.ssm9-mar-nss}"
 export FORK_MAR_CERT_NICKNAME=ssm9-mar
 
 # Targets built by the pipeline. macOS is deliberately absent; see README.md.
-export FORK_TARGETS="linux64 win64"
+# Overridable from the environment so the compose file can narrow it.
+export FORK_TARGETS="${FORK_TARGETS:-linux64 win64}"
 
 # Maps a target to the BUILD_TARGET strings Firefox may send in its update URL.
 # BUILD_TARGET is `appinfo.OS + "_" + ABI` (toolkit/modules/UpdateUtils.sys.mjs:90).

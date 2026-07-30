@@ -70,12 +70,21 @@ Add a proxy host in NPM:
 
 | Field | Value |
 | --- | --- |
-| Domain | the name you will bake into builds, e.g. `firefox-updates.lan` |
-| Scheme | `http` |
+| Domain | `firefox-builds.sai.town` |
+| Scheme | `http` (this is NPM → container; TLS terminates at NPM) |
 | Forward host | the NAS's LAN address |
 | Forward port | `8088` (`WEB_PORT` in the compose file) |
 | Cache Assets | **off** |
 | Websockets | off |
+
+On the **SSL** tab, request a Let's Encrypt certificate for
+`firefox-builds.sai.town` using a DNS challenge, and enable **Force SSL**.
+
+The certificate must be publicly trusted — Firefox validates against NSS's own
+trust store, not the OS one, so an internal CA would make update checks fail
+with no visible error. It also means **certificate renewal is now a dependency
+of updates working**: if renewal lapses, clients stop updating silently. Worth
+a calendar reminder or an alert on the NPM cert expiry.
 
 **Leave "Cache Assets" off.** A cached `update.xml` means clients keep being
 offered a version they already have, or one whose MARs have been replaced. The
@@ -99,23 +108,33 @@ network — which looks identical to "no update available".
 
 ### 2. MAR signing key
 
-On any machine with `certutil` (Debian: `libnss3-tools`):
+The certificate compiled into the updater decides which MARs an install will
+accept. Upstream ships Mozilla's real release certificates in
+`toolkit/mozapps/update/updater/release_*.der`; the build loop copies yours over
+them after every rebase. They are **not** committed — that keeps per-deployment
+material out of the branch, avoids binary conflicts on rebase, and avoids the
+ordering problem where the builder would have to clone a branch already
+containing a certificate for a key that does not exist yet.
+
+Easiest place to generate them is the builder container itself, which already
+has `certutil`. After the app is installed and has cloned the source:
 
 ```sh
-./tools/fork/gen_mar_key.sh
+docker exec -it firefox-fork-builder bash -c \
+  'FORK_NSS_DIR=/state/mar-nss /src/firefox/tools/fork/gen_mar_key.sh'
 ```
 
-Writes an NSS database to `~/.ssm9-mar-nss` and the public certificate to
-`toolkit/mozapps/update/updater/release_{primary,secondary}.der`. Commit the two
-`.der` files, then copy the database onto the state volume:
+That writes the key and both `.der` files straight onto the state volume where
+the loop expects them. The loop refuses to start until they are there.
+
+**Back it up offline before publishing any build:**
 
 ```sh
-cp -r ~/.ssm9-mar-nss /mnt/tank/firefox-fork/state/mar-nss
+tar -czf mar-nss-backup.tar.gz -C /mnt/tank/firefox-fork/state mar-nss
 ```
 
-**Back it up offline before publishing any build.** An installed build only
-accepts MARs signed by the key compiled into it. Losing the key means every user
-reinstalls by hand; there is no recovery path.
+An installed build only accepts MARs signed by the key compiled into it. Losing
+the key means every user reinstalls by hand; there is no recovery path.
 
 ### 3. Datasets
 
@@ -123,9 +142,9 @@ reinstalls by hand; there is no recovery path.
 /mnt/tank/firefox-fork/
 ├── src/        git checkout          (~10 GB)
 ├── obj/        object directories    (~50 GB)
-├── state/      toolchains, sccache, signing key, markers (~50 GB)
+├── state/      toolchains, sccache, mar-nss/ (key + certs), markers (~50 GB)
 ├── www/        published manifests and MARs
-├── vs/         packaged MSVC toolchain (win64 only)
+├── vs/         MSVC toolchain, downloaded on first run (~15 GB, win64 only)
 └── config/     nginx.conf from this directory
 ```
 
@@ -133,31 +152,59 @@ Copy `nginx.conf` into `config/`.
 
 ### 4. Windows toolchain
 
-MSVC and the Windows SDK cannot be redistributed by Mozilla, so `vs/` needs a
-copy packaged from a machine with Visual Studio installed. `build/vs/vs2026.yaml`
-documents the component list and the `build/vs/generate_yaml.py` invocation that
-produced it.
+Nothing to do — leave `vs/` empty and the builder populates it on first run.
 
-Leave `vs/` empty to build linux64 only — the loop logs and skips win64 rather
-than failing the whole cycle.
+MSVC and the Windows SDK cannot be redistributed by Mozilla, but they can be
+fetched from Microsoft directly on Linux: `vsdownload` is vendored at
+`third_party/python/vsdownload`, and `taskcluster/scripts/misc/get_vs.py`
+handles the non-Windows extraction layout, lowercasing paths and emitting a
+clang VFS overlay for the case-insensitive headers. No Windows machine and no
+Visual Studio install is involved.
+
+If you ever need to do it by hand:
+
+```sh
+./mach python --virtualenv build \
+  taskcluster/scripts/misc/get_vs.py build/vs/vs2026.yaml /vs
+```
+
+It is a several-GB download, done once. Fetching it means accepting Microsoft's
+Build Tools licence terms.
+
+Drop `win64` from `FORK_TARGETS` to skip this entirely and build linux64 only.
 
 ### 5. Seed the rebase base
 
-The loop tracks which upstream tag the fork branch sits on. Set it once to
-whatever `ssm9/fork-build` is currently based on:
+The loop tracks what `ssm9/fork-build` currently sits on, so it knows which
+commits are the fork's own when replaying them onto a new tag. It refuses to
+start without this rather than guessing — rebasing from the wrong base would
+silently produce a build with the wrong patches applied.
+
+The branch was developed on **mozilla-central**, so the initial value is a
+commit, not a release tag:
 
 ```sh
-echo FIREFOX_153_0_1_RELEASE > /mnt/tank/firefox-fork/state/fork-base
+echo 4eb5d723d627edec42ca3e5d606e1227c656dfca \
+  > /mnt/tank/firefox-fork/state/fork-base
 ```
 
-It refuses to start without this rather than guessing, because rebasing onto the
-wrong base would silently produce a build with the wrong patches applied.
+After the first successful rebase the loop overwrites this with the release tag
+it rebased onto, and it stays a tag from then on.
+
+**Expect the first rebase to need attention.** The patch series was written
+against central (154.0a1) and the build server targets release (153.0.1), which
+is an older, divergent branch. Replaying 24 commits across that gap is exactly
+the case the conflict guard exists for. If it stops, resolve the conflicts on
+`ssm9/fork-build`, push, and set `fork-base` to the release tag by hand.
 
 ### 6. Install the app
 
 Apps > Discover Apps > Custom App > Install via YAML, using
-`docker-compose.yaml` from this directory. Set `FORK_UPDATE_HOST`, `TS_AUTHKEY`,
-and `TS_HOSTNAME`; optionally `BUILD_JOBS` and `NOTIFY_URL`.
+`docker-compose.yaml` from this directory.
+
+`FORK_UPDATE_HOST` and `FORK_UPDATE_SCHEME` default to the values compiled into
+`build/application.ini.in`, so they only need setting if you change the URL.
+Optionally set `WEB_PORT`, `BUILD_JOBS`, and `NOTIFY_URL`.
 
 Replace every `/mnt/tank/...` path with your real dataset paths.
 
@@ -197,24 +244,30 @@ must be installed somewhere user-writable** — under `%LOCALAPPDATA%`, not
 `Program Files`. Installed into `Program Files`, it will download updates and
 then silently fail to apply them.
 
-## Why plain HTTP
+## On the transport
 
-The updater has no HTTPS requirement — its own test harness runs against
+Updates are served over HTTPS with a publicly trusted Let's Encrypt certificate
+terminated at NPM. The origin behind it is plain HTTP on the LAN, which is fine
+— nothing between NPM and the container leaves the machine.
+
+Worth knowing what this does and does not buy, because it is easy to assume TLS
+is what makes updates safe. It is not: integrity comes from the MAR signature.
+The updater has no HTTPS requirement at all — its own test harness runs against
 `http://localhost` (`toolkit/mozapps/update/tests/data/xpcshellUtilsAUS.js:78`),
-and there is no scheme check in `UpdateService.sys.mjs`. Integrity comes from
-the MAR signature, not from the transport: an attacker who could rewrite
-responses still cannot get a MAR installed without the signing key.
+and there is no scheme check in `UpdateService.sys.mjs`. An attacker who could
+rewrite responses still could not get a MAR installed without the signing key.
 
-WireGuard already provides encryption and peer authentication for everything in
-front of it, so TLS on top would be duplicating work that is already done, while
-adding a certificate renewal that update delivery then depends on.
+What TLS adds here is that update checks keep working from outside the WireGuard
+tunnel, and that nothing on the path can see or redirect them.
 
-Terminating TLS at NPM with an internal CA would be actively worse than either
-option: Firefox validates against NSS's own trust store rather than the OS one,
-so an untrusted cert makes update checks fail with no visible error. If you ever
-do want HTTPS here, use a publicly trusted certificate and set
-`FORK_UPDATE_SCHEME=https` **before** the first build — the scheme is compiled
-in and cannot be changed for installs already in the field.
+What it costs is a dependency: **if the certificate lapses, clients stop
+updating, silently**. That is the main new failure mode introduced by this
+choice, and it is why the certificate must be publicly trusted rather than an
+internal CA — Firefox validates against NSS's own trust store, not the OS one,
+so an untrusted certificate fails checks with no visible error.
+
+The scheme is compiled into every build and cannot be changed for installs
+already in the field.
 
 ## Verifying the chain
 
@@ -245,7 +298,7 @@ MAR signature against the compiled-in certificate:
 Manifest reachable at the exact path a client will ask for:
 
 ```sh
-curl http://firefox-updates.lan/updates/Linux_x86_64-gcc3/ssm9/update.xml
+curl https://firefox-builds.sai.town/updates/Linux_x86_64-gcc3/ssm9/update.xml
 ```
 
 **The test that matters:** install release N, let it update to N+1, and confirm
