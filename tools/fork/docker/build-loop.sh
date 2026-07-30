@@ -125,8 +125,14 @@ tools/fork/gen_mar_key.sh and put its output on the state volume."
 
 ensure_source() {
   if [ ! -d "$SRC/.git" ]; then
-    log "Cloning $FORK_REPO (this takes a while the first time)"
-    git clone "$FORK_REPO" "$SRC" || die "clone failed"
+    # --branch matters: the fork's default branch is upstream's main, which
+    # does not contain tools/fork at all. Cloning without it lands on main and
+    # everything downstream fails looking for its own scripts.
+    # --progress because git stays silent when stderr is not a TTY, which in
+    # `docker logs` makes a 20+ minute clone look like a hang.
+    log "Cloning $FORK_REPO branch $FORK_BRANCH (20+ min the first time)"
+    git clone --progress --branch "$FORK_BRANCH" "$FORK_REPO" "$SRC" \
+      || die "clone failed"
   fi
 
   cd "$SRC" || die "cannot enter $SRC"
@@ -138,6 +144,13 @@ ensure_source() {
     git remote add upstream "$UPSTREAM"
 
   git fetch origin --prune || die "fetch origin failed"
+
+  # Force, because install_mar_cert leaves the certificates modified in the
+  # working tree. Without -f this fails from the second cycle onwards, and a
+  # dirty tree would also make the rebase below refuse to start. Discarding is
+  # safe: the certificates are reinstalled from the state volume every build.
+  git checkout -f -B fork-build "origin/$FORK_BRANCH" \
+    || die "could not check out $FORK_BRANCH"
 }
 
 ensure_bootstrap() {
@@ -172,7 +185,9 @@ $STATE/fork-base"
     || git fetch upstream "refs/tags/$tag:refs/tags/$tag" \
     || die "could not fetch tag $tag"
 
-  git checkout -B fork-build "origin/$FORK_BRANCH" || die "checkout failed"
+  # -f discards the certificates install_mar_cert wrote into the tree last
+  # cycle; git rebase refuses to run with a dirty working tree.
+  git checkout -f -B fork-build "origin/$FORK_BRANCH" || die "checkout failed"
 
   # A conflict means upstream changed code the patch series touches. Stop.
   # Shipping a half-merged download path is worse than shipping nothing.
