@@ -1,0 +1,263 @@
+name: Fork release
+
+# Tracks mozilla-release and republishes it with the onDeterminingFilename
+# patch series applied, signed with this fork's own MAR key.
+#
+# See tools/fork/README.md for the one-time setup this depends on.
+
+on:
+  schedule:
+    # Daily. Dot releases (153.0.1 etc.) ship on their own schedule, so polling
+    # daily rather than every 4 weeks is what actually keeps up with security
+    # updates.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      force_version:
+        description: "Build this version even if already published"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  UPSTREAM: https://github.com/mozilla-firefox/firefox
+  PAGES_REPO: ssm9/firefox-updates
+  CHANNEL: ssm9
+
+jobs:
+  detect:
+    runs-on: self-hosted
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine last published version
+        id: last
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force_version }}
+        run: |
+          set -euo pipefail
+          # A forced run reports no previous build, so the version check always
+          # decides to rebuild. Done in shell rather than a `&&`/`||` expression
+          # because GitHub treats an empty string as falsy, which would make
+          # such an expression silently fall through to the real last version.
+          if [ -n "${FORCE:-}" ]; then
+            last=""
+          else
+            last="$(gh release view --json tagName -q .tagName 2>/dev/null || true)"
+          fi
+          echo "last_built=$last" >> "$GITHUB_OUTPUT"
+
+      - name: Check for a new upstream release
+        id: check
+        run: |
+          python3 tools/fork/check_release.py \
+            --remote "$UPSTREAM" \
+            --last-built "${{ steps.last.outputs.last_built }}"
+
+  rebase:
+    needs: detect
+    if: needs.detect.outputs.should_build == 'true'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rebase fork onto ${{ needs.detect.outputs.tag }}
+        id: rebase
+        run: |
+          set -euo pipefail
+          git config user.name "fork-release bot"
+          git config user.email "noreply@github.com"
+
+          git remote add upstream "$UPSTREAM" 2>/dev/null || true
+          git fetch --depth=1 upstream "refs/tags/${{ needs.detect.outputs.tag }}:refs/tags/${{ needs.detect.outputs.tag }}"
+
+          # refs/fork/base records the upstream tag the fork branch currently
+          # sits on. Bootstrapped manually on first run; see README.
+          git fetch origin "+refs/fork/base:refs/fork/base"
+          old_base="$(git rev-parse refs/fork/base)"
+
+          git checkout -B fork-build origin/ssm9/fork-build
+
+          # A conflict here means upstream changed code the patch touches.
+          # Stop and let a human resolve it rather than shipping a half-merged
+          # patch: a silently mis-merged download path is worse than no build.
+          if ! git rebase --onto "refs/tags/${{ needs.detect.outputs.tag }}" "$old_base" fork-build; then
+            git rebase --abort || true
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          git push --force origin fork-build
+          git update-ref refs/fork/base "refs/tags/${{ needs.detect.outputs.tag }}"
+          git push --force origin "refs/fork/base:refs/fork/base"
+
+      - name: Open an issue on rebase conflict
+        if: failure() && steps.rebase.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "Rebase conflict on ${{ needs.detect.outputs.tag }}" \
+            --body "The patch series no longer applies cleanly to \
+          ${{ needs.detect.outputs.tag }}. Upstream has changed code the \
+          onDeterminingFilename patches touch. No build was published for this \
+          release; resolve the conflict on \`ssm9/fork-build\`, update \
+          \`refs/fork/base\`, then re-run this workflow."
+
+  build:
+    needs: [detect, rebase]
+    runs-on: self-hosted
+    strategy:
+      # One build host: run targets one at a time rather than thrashing it.
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        target: [linux64, win64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fork-build
+          fetch-depth: 0
+
+      - name: Restore MAR signing key
+        env:
+          NSS_DB_B64: ${{ secrets.FORK_MAR_NSS_DB }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NSS_DB_B64:-}" ]; then
+            echo "FORK_MAR_NSS_DB secret is not set; see tools/fork/README.md" >&2
+            exit 1
+          fi
+          mkdir -p "$HOME/.ssm9-mar-nss"
+          chmod 700 "$HOME/.ssm9-mar-nss"
+          echo "$NSS_DB_B64" | base64 -d | tar -C "$HOME/.ssm9-mar-nss" -xz
+
+      - name: Build
+        env:
+          MOZCONFIG: browser/config/mozconfigs/${{ matrix.target }}/fork
+          MOZ_OBJDIR: obj-fork-${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          ./mach build
+          ./mach package
+
+      - name: Package and sign MAR
+        run: |
+          set -euo pipefail
+          ./tools/fork/make_mar.sh \
+            "${{ matrix.target }}" \
+            "obj-fork-${{ matrix.target }}" \
+            "artifacts"
+
+      - name: Collect installers
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          case "${{ matrix.target }}" in
+            linux64) cp obj-fork-linux64/dist/*.tar.xz artifacts/ ;;
+            win64)   cp obj-fork-win64/dist/*.zip artifacts/ ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.target }}
+          path: artifacts/
+
+  publish:
+    needs: [detect, build]
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fork-build
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "$VERSION" \
+            --title "Firefox $VERSION (onDeterminingFilename fork)" \
+            --notes "Unbranded Firefox $VERSION with the downloads.onDeterminingFilename patch series applied. Updates are served from this fork's own key; see tools/fork/README.md." \
+            artifacts/*.mar artifacts/*.tar.xz artifacts/*.zip
+
+      - name: Generate update manifests
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 tools/fork/gen_update_manifest.py \
+            --metadata artifacts/*.mar.json \
+            --outdir manifests \
+            --channel "$CHANNEL" \
+            --release-base-url "https://github.com/${{ github.repository }}/releases/download/$VERSION"
+
+      - name: Publish manifests to Pages
+        env:
+          GH_TOKEN: ${{ secrets.FORK_PAGES_TOKEN }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:$GH_TOKEN@github.com/$PAGES_REPO" pages
+          cp -r manifests/* pages/
+          cd pages
+          git config user.name "fork-release bot"
+          git config user.email "noreply@github.com"
+          git add -A
+          # Nothing to do if the manifests are byte-identical.
+          git diff --cached --quiet || git commit -m "Update manifests for $VERSION"
+          git push
+
+  sign-extension:
+    needs: [detect, publish]
+    runs-on: self-hosted
+    # Only runs once the extension repo is configured; see tools/fork/README.md.
+    if: vars.EXTENSION_REPO != ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.EXTENSION_REPO }}
+          token: ${{ secrets.FORK_PAGES_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Sign with AMO
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          set -euo pipefail
+          npx --yes web-ext sign \
+            --channel=unlisted \
+            --api-key="$AMO_JWT_ISSUER" \
+            --api-secret="$AMO_JWT_SECRET" \
+            --artifacts-dir=web-ext-artifacts
+
+      - name: Attach signed xpi to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release upload "$VERSION" web-ext-artifacts/*.xpi \
+            --repo "${{ github.repository }}"
