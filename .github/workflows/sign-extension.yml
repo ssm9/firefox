@@ -1,0 +1,59 @@
+name: Sign extension
+
+# AMO-signs the download-routing extension so it installs on any Firefox, not
+# only on fork builds. Manual: the extension has its own release cadence and
+# does not need re-signing every time Firefox ships.
+#
+# Builds themselves are produced by the build server on the NAS, not here.
+# See tools/fork/README.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      extension_repo:
+        description: "owner/repo of the extension to sign"
+        required: true
+        type: string
+      ref:
+        description: "branch or tag to sign"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.extension_repo }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.EXTENSION_REPO_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Sign with AMO
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          set -euo pipefail
+          # Unlisted add-ons get automated review only, so this normally
+          # returns a signed xpi within seconds. The AMO linter may warn about
+          # the unknown onDeterminingFilename API; for unlisted that is a
+          # warning, not a rejection.
+          npx --yes web-ext sign \
+            --channel=unlisted \
+            --api-key="$AMO_JWT_ISSUER" \
+            --api-secret="$AMO_JWT_SECRET" \
+            --artifacts-dir=web-ext-artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-extension
+          path: web-ext-artifacts/*.xpi
