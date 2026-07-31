@@ -337,8 +337,10 @@ build_target() {
   if [ -z "${FORK_SIGNMAR:-}" ]; then
     local candidate="$FORK_OBJDIR/dist/bin/signmar"
     if [ -x "$candidate" ]; then
-      "$candidate" -h >/dev/null 2>&1
-      local rc=$?
+      # `|| rc=$?` rather than a bare call: signmar exits non-zero for a usage
+      # message, so this would kill the script if `set -e` were ever added here.
+      local rc=0
+      "$candidate" -h >/dev/null 2>&1 || rc=$?
       if [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ]; then
         export FORK_SIGNMAR="$candidate"
         log "Using signmar from $target: $FORK_SIGNMAR"
