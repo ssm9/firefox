@@ -22,6 +22,15 @@ export MOZBUILD_STATE_PATH=/state/mozbuild
 export SCCACHE_DIR=/state/sccache
 export FORK_NSS_DIR=/state/mar-nss
 
+# mach bootstrap installs Rust with rustup, which defaults to $HOME/.cargo
+# (python/mozboot/mozboot/base.py:546). $HOME is inside the container and is
+# not a volume, so the toolchain disappeared whenever the container was
+# recreated, leaving configure to fail with "Rust compiler not found" even
+# though bootstrap had already run. Point both at the state volume.
+export CARGO_HOME=/state/cargo
+export RUSTUP_HOME=/state/rustup
+export PATH="$CARGO_HOME/bin:$PATH"
+
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 
 # Pause before exiting. The container restarts automatically, and every fatal
@@ -154,10 +163,20 @@ ensure_source() {
 }
 
 ensure_bootstrap() {
-  if [ -f "$STATE/.bootstrapped" ]; then
+  # The marker alone is not enough. Parts of what bootstrap installs live
+  # outside MOZBUILD_STATE_PATH -- rustup writes to CARGO_HOME -- so the marker
+  # can survive while the toolchain it recorded does not. Verify the compiler
+  # is actually reachable and re-bootstrap if it is not, rather than failing in
+  # configure several minutes later.
+  if [ -f "$STATE/.bootstrapped" ] && command -v rustc >/dev/null 2>&1; then
     return
   fi
-  log "Running mach bootstrap (first run only)"
+
+  if [ -f "$STATE/.bootstrapped" ]; then
+    log "Bootstrap marker present but rustc is missing; bootstrapping again"
+  fi
+
+  log "Running mach bootstrap"
   cd "$SRC" || die "cannot enter $SRC"
   ./mach --no-interactive bootstrap --application-choice browser \
     || die "mach bootstrap failed"
