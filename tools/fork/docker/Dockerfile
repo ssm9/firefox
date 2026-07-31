@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnss3-tools \
         zip \
         unzip \
+        msitools \
         xz-utils \
         bzip2 \
         zstd \
