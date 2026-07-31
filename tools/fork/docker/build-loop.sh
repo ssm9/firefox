@@ -15,6 +15,11 @@ BUILD_JOBS="${BUILD_JOBS:-}"
 NOTIFY_URL="${NOTIFY_URL:-}"
 
 SRC=/src/firefox
+# Tooling lives in its own small checkout so $SRC can be a pure release-tag
+# tree. Folding it into the applied patch would mean this script could be
+# rewritten underneath itself while running.
+TOOLS=/src/fork-tools
+FORK=$TOOLS/tools/fork
 STATE=/state
 WWW=/www
 
@@ -100,7 +105,7 @@ check_url_consistency() {
 
   if [ -z "$baked" ]; then
     die "Could not parse the update URL out of build/application.ini.in. The \
-fork commit that rewrites it may have been lost in a rebase."
+fork patch that rewrites it may have failed to apply."
   fi
 
   if [ "$baked" != "$expected" ]; then
@@ -115,7 +120,7 @@ will never find its manifest."
 
 # The certificate compiled into the updater decides which MARs an install will
 # accept. It lives on the state volume rather than in git, so it has to be
-# copied in after every rebase -- the rebase restores upstream's files, which
+# copied in after every checkout -- the tag checkout restores upstream's, which
 # are Mozilla's own certificates. Building against those would produce installs
 # that reject their own updates.
 #
@@ -165,16 +170,32 @@ tools/fork/gen_mar_key.sh and put its output on the state volume."
 # Source tree
 # ---------------------------------------------------------------------------
 
+# The tooling checkout: scripts, mozconfigs and the pipeline definition. Kept
+# separate from the Firefox tree and sparse, so it is a few megabytes and can be
+# updated without touching $SRC at all.
+ensure_tools() {
+  if [ ! -d "$TOOLS/.git" ]; then
+    log "Cloning tooling from $FORK_REPO branch $FORK_BRANCH"
+    git clone --filter=blob:none --sparse --branch "$FORK_BRANCH" \
+      "$FORK_REPO" "$TOOLS" || die "tooling clone failed"
+    git -C "$TOOLS" sparse-checkout set tools/fork .woodpecker \
+      || die "sparse-checkout failed"
+  fi
+
+  git config --global --add safe.directory "$TOOLS"
+  git -C "$TOOLS" fetch origin --prune || die "tooling fetch failed"
+  git -C "$TOOLS" checkout -f -B fork-tools "origin/$FORK_BRANCH" \
+    || die "could not check out tooling"
+
+  [ -f "$FORK/config.sh" ] || die "tooling checkout has no tools/fork/config.sh"
+}
+
 ensure_source() {
   if [ ! -d "$SRC/.git" ]; then
-    # --branch matters: the fork's default branch is upstream's main, which
-    # does not contain tools/fork at all. Cloning without it lands on main and
-    # everything downstream fails looking for its own scripts.
     # --progress because git stays silent when stderr is not a TTY, which in
     # `docker logs` makes a 20+ minute clone look like a hang.
-    log "Cloning $FORK_REPO branch $FORK_BRANCH (20+ min the first time)"
-    git clone --progress --branch "$FORK_BRANCH" "$FORK_REPO" "$SRC" \
-      || die "clone failed"
+    log "Cloning $FORK_REPO (20+ min the first time)"
+    git clone --progress "$FORK_REPO" "$SRC" || die "clone failed"
   fi
 
   cd "$SRC" || die "cannot enter $SRC"
@@ -186,20 +207,18 @@ ensure_source() {
     git remote add upstream "$UPSTREAM"
 
   git fetch origin --prune || die "fetch origin failed"
+}
 
-  # Only check out when the tree is not already usable. This used to run every
-  # cycle, which was expensive: it reset the tree from its rebased state back
-  # to origin's, and rebase_onto then rewrote it forward again. Every file
-  # differing between mozilla-central and the release tag was rewritten twice
-  # per cycle, and the resulting mtime churn made make rebuild far more than
-  # the content actually required. rebase_onto does its own checkout when it
-  # genuinely needs to.
-  if ! git rev-parse --verify --quiet fork-build >/dev/null 2>&1 \
-      || [ ! -f "$SRC/tools/fork/config.sh" ]; then
-    log "Checking out $FORK_BRANCH"
-    git checkout -f -B fork-build "origin/$FORK_BRANCH" \
-      || die "could not check out $FORK_BRANCH"
+# Where the fork's own commits begin. Derived rather than configured: the fork
+# branch and the upstream default branch diverge exactly there, so git already
+# knows it. $STATE/fork-base still overrides, for a series based somewhere the
+# merge base cannot express.
+patch_base() {
+  if [ -s "$STATE/fork-base" ]; then
+    tr -d '[:space:]' < "$STATE/fork-base"
+    return 0
   fi
+  git -C "$SRC" merge-base "origin/$FORK_BRANCH" origin/main 2>/dev/null
 }
 
 ensure_bootstrap() {
@@ -257,78 +276,85 @@ ensure_rust_target() {
 }
 
 # ---------------------------------------------------------------------------
-# Rebase
+# Patching
 # ---------------------------------------------------------------------------
 
-rebase_onto() {
+# Apply the fork's changes onto a release tag as a single squashed patch,
+# rather than replaying the commit series.
+#
+# The commit history is worth keeping on the upstreamable branch, but the build
+# only needs the resulting tree. Squashing has two concrete advantages:
+#
+#  - One conflict surface. A rebase can stop 34 separate times; a three-way
+#    apply either lands or reports its conflicted hunks once.
+#  - The tree stays anchored to a release tag. Rebasing reset the checkout to
+#    the mozilla-central-based branch and rewrote it forward to the tag every
+#    cycle -- 12,538 files each way. Moving tag to tag touches a few hundred,
+#    so a new release rebuilds incrementally instead of almost entirely.
+apply_patch_onto() {
   local tag="$1"
 
-  if [ ! -f "$STATE/fork-base" ]; then
-    die "No $STATE/fork-base. It must contain the upstream commit that \
-$FORK_BRANCH is based on -- everything after it is treated as the fork's own \
-work and replayed onto each release. Set it once, e.g.: \
-echo 4eb5d723d627edec42ca3e5d606e1227c656dfca > $STATE/fork-base"
+  local base
+  base="$(patch_base)"
+  if [ -z "$base" ]; then
+    die "Could not determine the patch base. Either origin/main is missing, or \
+the fork branch shares no history with it. Set it explicitly with: \
+echo <upstream-commit> > $STATE/fork-base"
   fi
-
-  local old_base
-  old_base="$(tr -d '[:space:]' < "$STATE/fork-base")"
 
   cd "$SRC" || die "cannot enter $SRC"
 
-  # Full fetch, never --depth=1. A shallow fetch grafts the tag in with no
-  # history, so rebase cannot find a merge base for its three-way merges and
-  # reports conflicts on commits that apply perfectly well. It also leaves a
-  # .git/shallow in an otherwise complete clone, which affects later operations.
+  # Full fetch, never --depth=1: a shallow tag has no history, so the three-way
+  # merge has no common ancestor to work from and reports conflicts on hunks
+  # that apply perfectly well.
   git fetch upstream "refs/tags/$tag:refs/tags/$tag" \
     || die "could not fetch tag $tag"
 
-  # Skip the whole thing when nothing that determines the result has changed.
-  # Rebasing again would produce an identical tree, but only after resetting to
-  # origin and rewriting every file that differs from the release tag -- twice.
-  # The mtime churn alone forces a near-total rebuild, which on a retry after a
-  # single target failed is pure waste.
-  local origin_sha head_sha marker
+  # Tooling paths are excluded. They live in their own checkout, and applying
+  # them here would rewrite this script while it is running.
+  local patch="$STATE/fork.patch"
+  git diff "$base" "origin/$FORK_BRANCH" \
+    -- . ':!tools/fork' ':!.woodpecker' ':!.github' > "$patch" \
+    || die "could not generate the fork patch"
+
+  if [ ! -s "$patch" ]; then
+    die "The generated patch is empty. origin/$FORK_BRANCH may not contain the \
+patch series, or the base is wrong."
+  fi
+
+  local origin_sha head_sha patch_sha marker
   origin_sha="$(git rev-parse "origin/$FORK_BRANCH")"
   head_sha="$(git rev-parse HEAD 2>/dev/null || echo none)"
-  marker="$tag $origin_sha $old_base $head_sha"
+  patch_sha="$(sha1sum "$patch" | cut -d" " -f1)"
+  marker="$tag $origin_sha $base $head_sha $patch_sha"
 
-  if [ -f "$STATE/last-rebase" ] \
-      && [ "$(cat "$STATE/last-rebase")" = "$marker" ]; then
-    log "Tree already rebased onto $tag and unchanged since; skipping rebase"
+  if [ -f "$STATE/last-patch" ] \
+      && [ "$(cat "$STATE/last-patch")" = "$marker" ]; then
+    log "Tree already at $tag with the current patch; skipping"
     return 0
   fi
 
-  # -f discards the certificates install_mar_cert wrote into the tree last
-  # cycle; git rebase refuses to run with a dirty working tree.
-  git checkout -f -B fork-build "origin/$FORK_BRANCH" || die "checkout failed"
+  log "Checking out $tag and applying the fork patch ($(wc -l < "$patch") lines)"
 
-  # A conflict means upstream changed code the patch series touches. Stop.
-  # Shipping a half-merged download path is worse than shipping nothing.
-  if ! git rebase --onto "refs/tags/$tag" "$old_base" fork-build; then
-    git rebase --abort 2>/dev/null || true
-    git checkout -f "origin/$FORK_BRANCH" 2>/dev/null || true
-    rm -f "$STATE/last-rebase"
+  # -f discards the certificates install_mar_cert wrote last cycle and the
+  # previous application of this patch. Object directories are gitignored and
+  # survive, which is what keeps the rebuild incremental.
+  git checkout -f "refs/tags/$tag" || die "could not check out $tag"
+
+  # A conflict means upstream changed code the patch touches. Stop rather than
+  # build a half-merged download path: git apply leaves the conflict markers in
+  # place, so the failure is inspectable in $SRC.
+  if ! git apply --3way "$patch"; then
+    log "The fork patch does not apply to $tag"
+    rm -f "$STATE/last-patch"
     return 1
   fi
 
-  # Record what produced this tree so the next cycle can tell it is already
-  # correct. HEAD is included so any manual change to the checkout invalidates
-  # it rather than being silently kept.
-  echo "$tag $origin_sha $old_base $(git rev-parse HEAD)" > "$STATE/last-rebase"
-
-  # fork-base is deliberately NOT advanced to $tag.
-  #
-  # The branch is re-checked-out from origin every cycle and the rebase result
-  # is never pushed, so origin/$FORK_BRANCH stays on its original base forever.
-  # Advancing fork-base would desynchronise the two immediately: the next cycle
-  # would compute its commit list as $tag..origin/$FORK_BRANCH, which is every
-  # upstream commit that diverged since that tag plus the fork's own -- and
-  # would try to replay all of it.
-  #
-  # Keeping fork-base fixed makes each cycle replay exactly the same fork
-  # commits onto whatever tag is current. Idempotent, and nothing to push.
-  # It only changes when the patch series itself is rebased onto a new base,
-  # which is a human action.
+  # Recorded so the next cycle can tell the tree is already correct. HEAD and
+  # the patch hash are included so a manual checkout, or an edit to the branch,
+  # invalidates it rather than being silently kept.
+  echo "$tag $origin_sha $base $(git rev-parse HEAD) $patch_sha" \
+    > "$STATE/last-patch"
   return 0
 }
 
@@ -379,7 +405,7 @@ build_target() {
   local target="$1"
   cd "$SRC" || die "cannot enter $SRC"
 
-  export MOZCONFIG="$SRC/tools/fork/mozconfigs/$target"
+  export MOZCONFIG="$FORK/mozconfigs/$target"
   [ -n "$BUILD_JOBS" ] && export MOZ_MAKE_FLAGS="-j$BUILD_JOBS"
 
   # Note: exporting MOZ_OBJDIR does nothing here. mozbuild only consults the
@@ -492,7 +518,7 @@ publish_target() {
   log "Publishing $target manifests"
   local staging="$WWW/.manifests-staging-$target"
   rm -rf "$staging"
-  python3 "$SRC/tools/fork/gen_update_manifest.py" \
+  python3 "$FORK/gen_update_manifest.py" \
     --metadata "$meta" \
     --outdir "$staging" \
     --channel "$FORK_CHANNEL" \
@@ -524,13 +550,14 @@ publish() {
 # ---------------------------------------------------------------------------
 
 run_once() {
+  ensure_tools
   ensure_source
 
   local last_built=""
   [ -f "$STATE/last-built" ] && last_built="$(tr -d '[:space:]' < "$STATE/last-built")"
 
   local check version tag should
-  check="$(python3 "$SRC/tools/fork/check_release.py" \
+  check="$(python3 "$FORK/check_release.py" \
     --remote "$UPSTREAM" --last-built "$last_built" 2>&1)" || {
     log "release check failed: $check"
     write_status "error" "upstream release check failed" ""
@@ -548,14 +575,14 @@ run_once() {
   fi
 
   notify "Firefox $version released; starting fork build"
-  write_status "building" "rebasing onto $tag" "$version"
+  write_status "building" "patching onto $tag" "$version"
 
-  if ! rebase_onto "$tag"; then
-    notify "Rebase conflict on $tag: the onDeterminingFilename patches do not \
-apply. No build was published for $version. Resolve it on $FORK_BRANCH and \
-push; leave $STATE/fork-base alone unless you rebased the series onto a \
-different upstream base. Reproduce it by hand with: git rebase --onto \
-refs/tags/$tag \$(cat $STATE/fork-base) $FORK_BRANCH"
+  if ! apply_patch_onto "$tag"; then
+    notify "The fork patch does not apply to $tag. Upstream changed code the \
+onDeterminingFilename series touches. No build was published for $version. \
+The conflict markers are left in $SRC for inspection; resolve it on \
+$FORK_BRANCH and push. Reproduce by hand with: git -C $SRC apply --3way \
+$STATE/fork.patch"
     write_status "conflict" "patch series does not apply to $tag" "$version"
     return 1
   fi
@@ -585,7 +612,7 @@ refs/tags/$tag \$(cat $STATE/fork-base) $FORK_BRANCH"
     fi
 
     # FORK_OBJDIR is set by build_target from mach's own view of the tree.
-    if ! "$SRC/tools/fork/make_mar.sh" "$target" \
+    if ! FORK_SRCDIR="$SRC" "$FORK/make_mar.sh" "$target" \
         "$FORK_OBJDIR" "$ARTIFACTS"; then
       log "MAR packaging or signing failed for $target; continuing"
       failed="$failed $target"
@@ -652,7 +679,7 @@ step_detect() {
   [ -f "$STATE/last-built" ] && last_built="$(tr -d '[:space:]' < "$STATE/last-built")"
 
   local check
-  check="$(python3 "$SRC/tools/fork/check_release.py" \
+  check="$(python3 "$FORK/check_release.py" \
     --remote "$UPSTREAM" --last-built "$last_built" 2>&1)" || {
     log "release check failed: $check"
     return 1
@@ -695,8 +722,8 @@ step_rebase() {
   local tag; tag="$(ci_get tag)"
   [ -n "$tag" ] || { log "no tag recorded; run detect first"; return 1; }
 
-  if ! rebase_onto "$tag"; then
-    notify "Rebase conflict on $tag: the onDeterminingFilename patches do not apply."
+  if ! apply_patch_onto "$tag"; then
+    notify "The fork patch does not apply to $tag; conflicts left in $SRC."
     write_status "conflict" "patch series does not apply to $tag" "$(ci_get version)"
     return 1
   fi
@@ -727,7 +754,7 @@ step_mar() {
   [ -n "$objdir" ] || { log "no object directory for $target; run build first"; return 1; }
 
   mkdir -p "$ARTIFACTS"
-  "$SRC/tools/fork/make_mar.sh" "$target" "$objdir" "$ARTIFACTS" || return 1
+  FORK_SRCDIR="$SRC" "$FORK/make_mar.sh" "$target" "$objdir" "$ARTIFACTS" || return 1
 
   case "$target" in
     linux64) cp -f "$objdir"/dist/*.tar.xz "$ARTIFACTS"/ 2>/dev/null || true ;;
@@ -816,20 +843,21 @@ main() {
 
   # config.sh lives in the tree, so the clone has to come first. Values already
   # set in the environment by the compose file win over its defaults.
+  ensure_tools
   ensure_source
 
   # This script is baked into the image, because it has to exist before there
   # is a checkout to run it from. Once the checkout exists, hand over to the
   # in-tree copy if it differs, so fixes to the loop take effect by updating
   # /src rather than rebuilding the image. The guard prevents an exec loop.
-  local intree="$SRC/tools/fork/docker/build-loop.sh"
+  local intree="$FORK/docker/build-loop.sh"
   if [ -z "${FORK_LOOP_REEXEC:-}" ] && [ -f "$intree" ] && ! cmp -s "$intree" "$0"; then
     log "In-tree build loop differs from the image copy; handing over to it"
     export FORK_LOOP_REEXEC=1
     exec bash "$intree" "$@"
   fi
 
-  . "$SRC/tools/fork/config.sh" || die "could not source tools/fork/config.sh"
+  . "$FORK/config.sh" || die "could not source tools/fork/config.sh"
 
   preflight
 

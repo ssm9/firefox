@@ -82,17 +82,16 @@ Confirm it exists:
 sudo docker images firefox-fork-builder
 ```
 
-## 4. Seed the rebase base
+## 4. Patch base — nothing to do
 
-This tells the loop which commits are the fork's own. The branch was developed
-on mozilla-central, so the initial value is a **commit, not a release tag**:
+The build server derives where the fork's own commits begin, as the merge base
+of the fork branch and `origin/main`. No seeding step.
+
+Override it only for a series based somewhere the merge base cannot express:
 
 ```sh
-echo 4eb5d723d627edec42ca3e5d606e1227c656dfca \
-  > /mnt/tank/firefox-fork/state/fork-base
+echo <upstream-commit> > /mnt/tank/firefox-fork/state/fork-base
 ```
-
-The loop overwrites this with a release tag after its first successful rebase.
 
 ## 5. Install the app
 
@@ -234,16 +233,23 @@ and if `win64` is in `FORK_TARGETS` it downloads the MSVC toolchain from
 Microsoft (several GB). Then it compiles Firefox, which takes hours with a cold
 sccache.
 
-**Expect the rebase to need attention.** The patch series was written against
-mozilla-central (154.0a1) and the server targets mozilla-release, an older
-divergent branch. Replaying 24 commits across that gap is exactly what the
-conflict guard is for. If it stops:
+**If the patch does not apply**, upstream changed code the series touches. The
+conflict markers are left in `/src/firefox` for inspection, and nothing is
+published. Resolve it on `ssm9/fork-build` and push; the next cycle regenerates
+the patch from the branch. Reproduce it by hand with:
 
-1. Resolve the conflicts on `ssm9/fork-build` and push
-2. Set `state/fork-base` to the release tag it was rebasing onto
-3. Re-run
+```sh
+sudo docker exec -it firefox-fork-builder \
+  git -C /src/firefox apply --3way /state/fork.patch
+```
 
-When it succeeds, start the app again for the normal polling loop.
+Two checkouts live under `/src`:
+
+- `/src/firefox` — the Firefox tree, kept at a release tag with the fork patch
+  applied on top. Moving between releases touches a few hundred files, so
+  rebuilds stay incremental.
+- `/src/fork-tools` — a sparse checkout of `tools/fork` and `.woodpecker`, a
+  few megabytes. Updating tooling does not touch the Firefox tree at all.
 
 ## 10. Verify before trusting it
 

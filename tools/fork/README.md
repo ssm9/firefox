@@ -181,29 +181,26 @@ Build Tools licence terms.
 
 Drop `win64` from `FORK_TARGETS` to skip this entirely and build linux64 only.
 
-### 5. Seed the rebase base
+### 5. Patch base
 
-The loop tracks what `ssm9/fork-build` currently sits on, so it knows which
-commits are the fork's own when replaying them onto a new tag. It refuses to
-start without this rather than guessing — rebasing from the wrong base would
-silently produce a build with the wrong patches applied.
+Nothing to configure. The build server derives where the fork's own commits
+begin, as the merge base of the fork branch and `origin/main`.
 
-The branch was developed on **mozilla-central**, so the initial value is a
-commit, not a release tag:
+The fork's changes are applied to each release tag as a single squashed patch
+rather than by replaying the commit series. The history is worth keeping on the
+upstreamable branch, but the build only needs the resulting tree, and squashing
+gives one conflict surface instead of one per commit. It also keeps the checkout
+anchored to a release tag: moving between releases touches a few hundred files
+where resetting to the mozilla-central-based branch and rebasing forward touched
+over twelve thousand, which is the difference between an incremental rebuild and
+a near-total one.
+
+Override the base only for a series based somewhere the merge base cannot
+express:
 
 ```sh
-echo 4eb5d723d627edec42ca3e5d606e1227c656dfca \
-  > /mnt/tank/firefox-fork/state/fork-base
+echo <upstream-commit> > /mnt/tank/firefox-fork/state/fork-base
 ```
-
-After the first successful rebase the loop overwrites this with the release tag
-it rebased onto, and it stays a tag from then on.
-
-**Expect the first rebase to need attention.** The patch series was written
-against central (154.0a1) and the build server targets release (153.0.1), which
-is an older, divergent branch. Replaying 24 commits across that gap is exactly
-the case the conflict guard exists for. If it stops, resolve the conflicts on
-`ssm9/fork-build`, push, and set `fork-base` to the release tag by hand.
 
 ### 6. Install the app
 

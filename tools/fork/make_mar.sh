@@ -21,7 +21,17 @@ OUTDIR="${3:?usage: make_mar.sh <target> <objdir> <outdir>}"
 
 cd "$(dirname "$0")"
 . ./config.sh
-TOPSRCDIR="$(git rev-parse --show-toplevel)"
+
+# The Firefox source tree, which is not necessarily this script's repository:
+# the build server keeps its tooling in a separate checkout so the Firefox tree
+# can be a pure release-tag checkout. Deriving it from $0 would find the tooling
+# repository and then fail looking for tools/update-packaging in it.
+TOPSRCDIR="${FORK_SRCDIR:-$(git rev-parse --show-toplevel)}"
+if [ ! -f "$TOPSRCDIR/tools/update-packaging/make_full_update.sh" ]; then
+  echo "ERROR: $TOPSRCDIR does not look like a Firefox checkout." >&2
+  echo "Set FORK_SRCDIR to the source tree the build came from." >&2
+  exit 1
+fi
 cd "$TOPSRCDIR"
 
 OBJDIR="$(cd "$OBJDIR" && pwd)"

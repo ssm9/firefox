@@ -33,7 +33,16 @@ if [ ! -f "$OMNI" ]; then
 fi
 
 if [ -z "$SRCDIR" ]; then
-  SRCDIR="$(cd "$(dirname "$0")/../.." && pwd)"
+  # Not derived from this script's location: the build server keeps its tooling
+  # in a separate checkout, so ../.. is the tooling repository rather than the
+  # Firefox tree the build came from.
+  SRCDIR="${FORK_SRCDIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
+fi
+
+if [ ! -d "$SRCDIR/toolkit/components/downloads" ]; then
+  echo "ERROR: $SRCDIR does not look like a Firefox checkout." >&2
+  echo "Pass it as the second argument, or set FORK_SRCDIR." >&2
+  exit 2
 fi
 
 # source path : path inside omni.ja
