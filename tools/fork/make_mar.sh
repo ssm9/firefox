@@ -130,6 +130,12 @@ rm -f "$UNSIGNED"
 # against the signing database directly: the point of this check is that the
 # MAR validates against the exact bytes that get compiled into the updater, and
 # verifying against the key that just signed it would prove nothing.
+#
+# The ",," trust flags are deliberate and sufficient. signmar looks the
+# certificate up by nickname, then passes its raw DER straight to
+# mar_verify_signatures (modules/libmar/tool/mar.c:379) -- the same function
+# the updater calls -- so trust is never evaluated and this reproduces the
+# check an installed build performs.
 echo "Verifying signature against the committed certificate"
 
 CERT_DER="$TOPSRCDIR/toolkit/mozapps/update/updater/release_primary.der"
