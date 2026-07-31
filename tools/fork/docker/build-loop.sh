@@ -111,21 +111,49 @@ will never find its manifest."
 # The certificate compiled into the updater decides which MARs an install will
 # accept. It lives on the state volume rather than in git, so it has to be
 # copied in after every rebase -- the rebase restores upstream's files, which
-# are Mozilla's real release certificates. Building against those would produce
-# installs that reject their own updates.
+# are Mozilla's own certificates. Building against those would produce installs
+# that reject their own updates.
+#
+# Which file the build actually reads depends on the update channel
+# (toolkit/mozapps/update/updater/moz.build:66). Only beta/release/esr use
+# release_*.der; the nightly channels use nightly_aurora_level3_*.der; anything
+# else -- including a custom channel name like this fork's -- falls through to
+# dep1.der/dep2.der, Mozilla's throwaway test certificates. Overwriting
+# release_*.der for a channel the build classifies as "other" silently achieves
+# nothing, and the updater ships trusting a certificate nobody holds the key
+# for. Mirror that selection here so the certificate lands where it is read.
 install_mar_cert() {
   local dest="$SRC/toolkit/mozapps/update/updater"
-  local n
+  local primary secondary
+
+  case "$FORK_CHANNEL" in
+    beta|release|esr)
+      primary=release_primary.der
+      secondary=release_secondary.der
+      ;;
+    nightly|aurora|nightly-*)
+      primary=nightly_aurora_level3_primary.der
+      secondary=nightly_aurora_level3_secondary.der
+      ;;
+    *)
+      primary=dep1.der
+      secondary=dep2.der
+      ;;
+  esac
 
   for n in release_primary release_secondary; do
     if [ ! -s "$FORK_NSS_DIR/$n.der" ]; then
       die "Missing $FORK_NSS_DIR/$n.der. Generate the signing key with \
 tools/fork/gen_mar_key.sh and put its output on the state volume."
     fi
-    cp -f "$FORK_NSS_DIR/$n.der" "$dest/$n.der" || die "could not install $n.der"
   done
 
-  log "Installed fork MAR certificates over upstream's"
+  cp -f "$FORK_NSS_DIR/release_primary.der" "$dest/$primary" \
+    || die "could not install $primary"
+  cp -f "$FORK_NSS_DIR/release_secondary.der" "$dest/$secondary" \
+    || die "could not install $secondary"
+
+  log "Installed fork MAR certificates as $primary / $secondary (channel $FORK_CHANNEL)"
 }
 
 # ---------------------------------------------------------------------------
