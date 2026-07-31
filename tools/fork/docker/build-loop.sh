@@ -256,8 +256,14 @@ build_target() {
   cd "$SRC" || die "cannot enter $SRC"
 
   export MOZCONFIG="$SRC/tools/fork/mozconfigs/$target"
-  export MOZ_OBJDIR="/obj/obj-fork-$target"
   [ -n "$BUILD_JOBS" ] && export MOZ_MAKE_FLAGS="-j$BUILD_JOBS"
+
+  # Note: exporting MOZ_OBJDIR does nothing here. mozbuild only consults the
+  # environment variable when there is no mozconfig at all
+  # (python/mozbuild/mozbuild/mozconfig.py:121); with MOZCONFIG set that branch
+  # is skipped and the objdir falls back to the default under topsrcdir.
+  # Rather than pin it, ask mach where it actually is after the build, so this
+  # keeps working however the objdir ends up being configured.
 
   if [ ! -f "$MOZCONFIG" ]; then
     log "ERROR: no mozconfig at $MOZCONFIG"
@@ -277,6 +283,18 @@ build_target() {
   log "Building $target"
   ./mach build || return 1
   ./mach package || return 1
+
+  # Ask mach where it actually built, rather than assuming. Sets the global
+  # FORK_OBJDIR for the caller to hand to make_mar.sh.
+  FORK_OBJDIR="$(./mach environment --format=json 2>/dev/null \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["topobjdir"])')"
+
+  if [ -z "$FORK_OBJDIR" ] || [ ! -d "$FORK_OBJDIR" ]; then
+    log "ERROR: could not determine the object directory for $target"
+    return 1
+  fi
+
+  log "Object directory for $target: $FORK_OBJDIR"
   return 0
 }
 
@@ -375,16 +393,17 @@ refs/tags/$tag \$(cat $STATE/fork-base) $FORK_BRANCH"
       return 1
     fi
 
+    # FORK_OBJDIR is set by build_target from mach's own view of the tree.
     if ! "$SRC/tools/fork/make_mar.sh" "$target" \
-        "/obj/obj-fork-$target" /tmp/fork-artifacts; then
+        "$FORK_OBJDIR" /tmp/fork-artifacts; then
       notify "MAR packaging or signing failed for $target on $version."
       write_status "failed" "MAR packaging failed for $target" "$version"
       return 1
     fi
 
     case "$target" in
-      linux64) cp -f "/obj/obj-fork-$target"/dist/*.tar.xz /tmp/fork-artifacts/ 2>/dev/null || true ;;
-      win64)   cp -f "/obj/obj-fork-$target"/dist/*.zip /tmp/fork-artifacts/ 2>/dev/null || true ;;
+      linux64) cp -f "$FORK_OBJDIR"/dist/*.tar.xz /tmp/fork-artifacts/ 2>/dev/null || true ;;
+      win64)   cp -f "$FORK_OBJDIR"/dist/*.zip /tmp/fork-artifacts/ 2>/dev/null || true ;;
     esac
 
     metadata+=("/tmp/fork-artifacts/$target.mar.json")
