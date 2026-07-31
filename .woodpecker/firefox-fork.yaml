@@ -1,17 +1,18 @@
 ---
 # Firefox fork build pipeline, run by Woodpecker on the NAS.
 #
-# Each step is the same function the standalone loop calls, invoked through
+# Each step invokes the same function the standalone loop calls, through
 # `build-loop.sh step <phase>`, so the two entry points cannot drift apart.
-# State that the loop kept in shell variables -- version, tag, object
-# directories -- is passed between steps through /state/ci.
+# State the loop kept in shell variables -- version, tag, object directories --
+# passes between steps through /state/ci, and built MARs through
+# /state/artifacts. Neither can live in /tmp: every step is its own container.
 #
-# Trigger this from a Woodpecker cron (every 6h). The detect step records
-# whether there is anything to do; the rest no-op if not, so a quiet poll shows
-# up as a short green run rather than a failure.
+# Trigger from a Woodpecker cron (every 6h). The detect step records whether
+# there is anything to do; later steps no-op if not, so a quiet poll is a short
+# green run rather than a failure.
 
-# The source tree is a persistent 6+ GB checkout on /src that the build server
-# manages itself. Cloning it per pipeline would be absurd.
+# The source tree is a persistent 6+ GB checkout on /src managed by the build
+# server. Cloning it per pipeline would be absurd.
 skip_clone: true
 
 steps:
@@ -26,10 +27,14 @@ steps:
       - /usr/local/bin/build-loop.sh step rebase
     depends_on: [detect]
 
-  # Targets are built sequentially rather than in parallel: they would share
-  # the machine's cores and sccache, and serialising keeps each build as fast
-  # as it can be. A failure here does not stop the other target -- publish
-  # ships whatever produced a MAR.
+  # The two targets run concurrently. They do not halve wall-clock time -- they
+  # share the same cores, so the gain is only from overlapping one build's
+  # serial stretches (gkrust, the libxul link) with the other's parallel work.
+  #
+  # Cap BUILD_JOBS at roughly half the core count in the agent environment.
+  # Without it each build sizes itself for the whole machine, and two of those
+  # oversubscribe the CPU and can collide at peak memory, where two libxul
+  # links together are the most likely way to exhaust RAM.
   - name: build-linux64
     image: firefox-fork-builder:latest
     commands:
@@ -43,11 +48,31 @@ steps:
     commands:
       - /usr/local/bin/build-loop.sh step build win64
       - /usr/local/bin/build-loop.sh step mar win64
+    depends_on: [rebase]
+    failure: ignore
+
+  # Each target publishes as soon as it is ready rather than waiting for the
+  # other. Targets have separate MARs and separate manifest paths, so these do
+  # not conflict; publish_target stages manifests per target for that reason.
+  - name: publish-linux64
+    image: firefox-fork-builder:latest
+    commands:
+      - /usr/local/bin/build-loop.sh step publish linux64
     depends_on: [build-linux64]
     failure: ignore
 
-  - name: publish
+  - name: publish-win64
     image: firefox-fork-builder:latest
     commands:
-      - /usr/local/bin/build-loop.sh step publish
+      - /usr/local/bin/build-loop.sh step publish win64
     depends_on: [build-win64]
+    failure: ignore
+
+  # Owns last-built, and is the step whose colour reflects the whole run.
+  # Recording last-built inside a per-target publish would mark the release
+  # done while another target was still failing, so it would never be retried.
+  - name: finalize
+    image: firefox-fork-builder:latest
+    commands:
+      - /usr/local/bin/build-loop.sh step finalize
+    depends_on: [publish-linux64, publish-win64]
