@@ -161,8 +161,14 @@ Add a proxy host:
 | Block Common Exploits | on |
 | Websockets | off |
 
-**SSL tab:** request a Let's Encrypt certificate via DNS challenge, enable
-**Force SSL**.
+**SSL tab:** select your existing **wildcard** certificate for the parent
+domain. Enable **Force SSL**.
+
+Do not request a per-host certificate here. Let's Encrypt publishes every
+certificate it issues to public Certificate Transparency logs, so a cert for
+`firefox-builds.sai.town` puts that exact hostname in a permanent, publicly
+searchable record within minutes of issuance. A wildcard shows only `*.sai.town`
+in CT and says nothing about which subdomains exist.
 
 **Advanced tab:**
 
