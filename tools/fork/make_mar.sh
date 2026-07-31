@@ -115,33 +115,54 @@ fi
 # so they land in different places: dist/host/bin and dist/bin respectively.
 MAR_BIN="$OBJDIR/dist/host/bin/mar"
 
-# For a cross-compiled target, dist/bin/signmar is built for that target and
-# cannot run here -- a win64 build produces a Windows executable. Signing is
-# architecture-independent, so FORK_SIGNMAR lets the caller pass a native one
-# built for the host.
-SIGNMAR_BIN="${FORK_SIGNMAR:-$OBJDIR/dist/bin/signmar}"
-
 if [ ! -x "$MAR_BIN" ]; then
   echo "ERROR: $MAR_BIN not found or not executable." >&2
   exit 1
 fi
 
-if [ ! -x "$SIGNMAR_BIN" ]; then
-  echo "ERROR: $SIGNMAR_BIN not found or not executable." >&2
-  exit 1
+# Whether a binary can actually run on this host. A cross-compiled signmar is
+# built for its target -- win64's is a Windows executable -- and exec failure
+# reports 126 or 127, which is otherwise easy to mistake for a signing error.
+#
+# `|| rc=$?` is required: signmar exits non-zero for a usage message, and under
+# `set -e` a bare invocation would kill the script before the status is read.
+signmar_runs_here() {
+  [ -x "$1" ] || return 1
+  local rc=0
+  "$1" -h >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ]
+}
+
+# Signing is architecture-independent, so any host-native signmar will do.
+# Preference order: one the caller named, this target's own, then any sibling
+# object directory's.
+#
+# The search matters because targets build concurrently. Relying on the caller
+# to pass one assumes the native build finished first, which the pipeline does
+# not guarantee -- win64 can reach packaging while linux64 is still compiling.
+SIGNMAR_BIN=""
+for candidate in "${FORK_SIGNMAR:-}" "$OBJDIR/dist/bin/signmar"; do
+  if [ -n "$candidate" ] && signmar_runs_here "$candidate"; then
+    SIGNMAR_BIN="$candidate"
+    break
+  fi
+done
+
+if [ -z "$SIGNMAR_BIN" ]; then
+  for candidate in "$(dirname "$OBJDIR")"/*/dist/bin/signmar; do
+    if signmar_runs_here "$candidate"; then
+      SIGNMAR_BIN="$candidate"
+      echo "Using signmar from $candidate (this target's is not host-native)"
+      break
+    fi
+  done
 fi
 
-# Catch a cross-built signmar before it is used: exec failure reports 126/127,
-# which is otherwise easy to mistake for a signing error.
-#
-# `|| rc=$?` is required. signmar exits non-zero for a usage message, and under
-# `set -e` a bare invocation kills the script before the status can be read --
-# so this check, meant to produce a clearer error, became one itself.
-rc=0
-"$SIGNMAR_BIN" -h >/dev/null 2>&1 || rc=$?
-if [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ]; then
-  echo "ERROR: $SIGNMAR_BIN cannot be executed on this host -- it was probably" >&2
-  echo "built for the target. Set FORK_SIGNMAR to a host-native signmar." >&2
+if [ -z "$SIGNMAR_BIN" ]; then
+  echo "ERROR: no signmar that runs on this host." >&2
+  echo "Searched $OBJDIR and its sibling object directories. A cross-compiled" >&2
+  echo "target builds signmar for the target, so a native build must have" >&2
+  echo "completed first, or FORK_SIGNMAR must name one." >&2
   exit 1
 fi
 
