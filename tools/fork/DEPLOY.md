@@ -286,6 +286,46 @@ rm /mnt/tank/firefox-fork/state/last-built
 sudo docker restart firefox-fork-builder
 ```
 
-To pick up changes to the pipeline scripts, pull in `fork-config`, rebuild the
-image, and recreate the app. The builder's own `/src` clone updates itself on
-every cycle.
+## Updating the pipeline scripts
+
+Everything except `build-loop.sh` is read from `/src` at run time, so updating
+the checkout is enough:
+
+```sh
+cd /mnt/tank/firefox-fork/src/firefox
+sudo git fetch origin && sudo git checkout -f -B fork-build origin/ssm9/fork-build
+sudo docker restart firefox-fork-builder
+```
+
+`build-loop.sh` is the exception: it is baked into the image, because it has to
+exist before there is a checkout to run it from. It hands over to the in-tree
+copy when the two differ, so in normal operation updating `/src` still suffices
+— but that only works once the image contains a version that knows how to hand
+over. Rebuild it from `/src`, which is already the verified-correct source:
+
+```sh
+cd /mnt/tank/firefox-fork/src/firefox/tools/fork/docker
+sudo docker build -t firefox-fork-builder:latest .
+sudo docker restart firefox-fork-builder
+```
+
+Look for `In-tree build loop differs from the image copy; handing over to it` to
+confirm the handover is working.
+
+To check which copy is running:
+
+```sh
+sudo docker exec firefox-fork-builder grep -c FORK_LOOP_REEXEC /usr/local/bin/build-loop.sh
+```
+
+`0` means the image predates the handover and is ignoring `/src` entirely.
+
+Alternatively, skip the image copy for good by pointing the container straight
+at the checkout, which works because `/src` persists across restarts:
+
+```yaml
+    entrypoint: ["/bin/bash", "/src/firefox/tools/fork/docker/build-loop.sh"]
+```
+
+Only do this on an already-deployed instance — on a fresh one `/src` is empty
+and there is nothing to execute.
