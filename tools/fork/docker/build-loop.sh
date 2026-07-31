@@ -285,6 +285,16 @@ be fetched. Mount it read-write, or drop win64 from FORK_TARGETS."
     return 1
   fi
 
+  # vsdownload shells out to msiextract to unpack the SDK installers
+  # (third_party/python/vsdownload/vsdownload.py:721). It is in the image, but
+  # install it on demand too so an older image does not need rebuilding just
+  # for this.
+  if ! command -v msiextract >/dev/null 2>&1; then
+    log "msiextract missing; installing msitools"
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends msitools \
+      || { log "ERROR: could not install msitools"; return 1; }
+  fi
+
   log "Fetching the MSVC toolchain into /vs (first run only, several GB)"
   cd "$SRC" || return 1
   ./mach python --virtualenv build \
@@ -464,22 +474,29 @@ refs/tags/$tag \$(cat $STATE/fork-base) $FORK_BRANCH"
   rm -rf /tmp/fork-artifacts
   mkdir -p /tmp/fork-artifacts
 
+  # Targets are independent: each produces its own MAR and its own manifest, so
+  # one failing is no reason to withhold the others. A target with no manifest
+  # simply sees no update, which is strictly better than every target seeing
+  # none because an unrelated one could not build.
   local metadata=()
+  local built=""
+  local failed=""
   local target
   for target in $FORK_TARGETS; do
     write_status "building" "compiling $target" "$version"
+
     if ! build_target "$target"; then
-      notify "Build failed for $target on $version. Nothing published."
-      write_status "failed" "build failed for $target" "$version"
-      return 1
+      log "Build failed for $target; continuing with the remaining targets"
+      failed="$failed $target"
+      continue
     fi
 
     # FORK_OBJDIR is set by build_target from mach's own view of the tree.
     if ! "$SRC/tools/fork/make_mar.sh" "$target" \
         "$FORK_OBJDIR" /tmp/fork-artifacts; then
-      notify "MAR packaging or signing failed for $target on $version."
-      write_status "failed" "MAR packaging failed for $target" "$version"
-      return 1
+      log "MAR packaging or signing failed for $target; continuing"
+      failed="$failed $target"
+      continue
     fi
 
     case "$target" in
@@ -488,7 +505,14 @@ refs/tags/$tag \$(cat $STATE/fork-base) $FORK_BRANCH"
     esac
 
     metadata+=("/tmp/fork-artifacts/$target.mar.json")
+    built="$built $target"
   done
+
+  if [ "${#metadata[@]}" -eq 0 ]; then
+    notify "No target built successfully for $version. Nothing published. Failed:$failed"
+    write_status "failed" "all targets failed:$failed" "$version"
+    return 1
+  fi
 
   if ! publish "$version" "${metadata[@]}"; then
     notify "Publishing failed for $version; the previous version is still being served."
@@ -496,8 +520,18 @@ refs/tags/$tag \$(cat $STATE/fork-base) $FORK_BRANCH"
     return 1
   fi
 
+  if [ -n "$failed" ]; then
+    # last-built is deliberately not recorded. Doing so would mark this release
+    # done and stop the failing targets from ever being retried until the next
+    # release. Leaving it unset means the next cycle tries again -- cheap, since
+    # the targets that succeeded are cached and rebuild in minutes.
+    notify "Published $version for:$built -- still failing:$failed. Will retry."
+    write_status "partial" "published:$built failing:$failed" "$version"
+    return 1
+  fi
+
   echo "$version" > "$STATE/last-built"
-  notify "Published Firefox $version for $FORK_TARGETS"
+  notify "Published Firefox $version for:$built"
   write_status "ok" "published" "$version"
   return 0
 }
