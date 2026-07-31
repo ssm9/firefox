@@ -52,15 +52,18 @@ the first, and refuses to start if it cannot create it:
 ```sh
 mkdir -p /mnt/tank/firefox-fork/{woodpecker,woodpecker-agent}
 
-# The images run as a non-root user. Read it from the image metadata rather
-# than running `id` in the container -- these images are distroless and have
-# no shell or coreutils.
-uid=$(sudo docker inspect woodpeckerci/woodpecker-server:v3 \
-        --format '{{.Config.User}}')
-echo "container user: ${uid:-root}"
+# The images run as a non-root user, named rather than numeric, and the host
+# has no such user. They are also distroless, so `id` cannot be run in them.
+# Copy /etc/passwd out of the image instead -- docker cp executes nothing.
+cid=$(sudo docker create woodpeckerci/woodpecker-server:v3)
+sudo docker cp "$cid:/etc/passwd" /tmp/wp-passwd >/dev/null
+sudo docker rm "$cid" >/dev/null
 
-sudo chown -R "${uid:-0}" /mnt/tank/firefox-fork/woodpecker \
-                          /mnt/tank/firefox-fork/woodpecker-agent
+owner=$(awk -F: '/^woodpecker:/ {print $3":"$4}' /tmp/wp-passwd)
+echo "container user: ${owner:-0:0}"
+
+sudo chown -R "${owner:-0:0}" /mnt/tank/firefox-fork/woodpecker \
+                              /mnt/tank/firefox-fork/woodpecker-agent
 ```
 
 Docker creates a missing bind-mount source itself, but as root, which is why
