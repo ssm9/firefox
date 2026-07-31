@@ -80,8 +80,13 @@ Add a proxy host in NPM:
 | Cache Assets | **off** |
 | Websockets | off |
 
-On the **SSL** tab, request a Let's Encrypt certificate for
-`firefox-builds.sai.town` using a DNS challenge, and enable **Force SSL**.
+On the **SSL** tab, select an existing **wildcard** certificate for the parent
+domain and enable **Force SSL**.
+
+Use a wildcard rather than a per-host certificate. Let's Encrypt publishes
+everything it issues to public Certificate Transparency logs, so a certificate
+naming `firefox-builds.sai.town` makes that hostname permanently and publicly
+searchable. A wildcard reveals only `*.sai.town`.
 
 The certificate must be publicly trusted — Firefox validates against NSS's own
 trust store, not the OS one, so an internal CA would make update checks fail
@@ -271,6 +276,31 @@ so an untrusted certificate fails checks with no visible error.
 
 The scheme is compiled into every build and cannot be changed for installs
 already in the field.
+
+## What discloses the hostname
+
+Worth being precise about, since the update host is infrastructure you may not
+want enumerable.
+
+**Does not disclose it:**
+
+- *The MAR signing certificate.* Subject is `CN=ssm9-mar,O=ssm9 firefox fork`
+  with no hostname and no SAN. It is self-signed, never submitted to a CA, and
+  never leaves the state volume.
+- *A wildcard TLS certificate.* Certificate Transparency records `*.sai.town`
+  and nothing about which subdomains exist.
+
+**Does disclose it:**
+
+- *A per-host TLS certificate.* Every certificate a public CA issues is
+  published to CT logs and is searchable within minutes, permanently. This is
+  why the setup uses a wildcard.
+- *A public DNS record.* If the name resolves on the public internet it is
+  visible to anyone who queries it, and subdomain enumeration tools try common
+  names. Split-horizon DNS that only answers inside the tunnel avoids this.
+- *Any build you hand to someone else.* The update URL is compiled into
+  `application.ini`, so anyone with a copy of the binary can read it. This is
+  unavoidable given the design — the build has to know where to look.
 
 ## Verifying the chain
 
