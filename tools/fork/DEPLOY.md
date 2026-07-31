@@ -45,6 +45,23 @@ In the TrueNAS UI, or over SSH:
 mkdir -p /mnt/tank/firefox-fork/{src,obj,state,www,vs,config}
 ```
 
+If you are running the Woodpecker stack, it needs two more, and they must be
+writable by the containers' own user — the server stores its SQLite database in
+the first, and refuses to start if it cannot create it:
+
+```sh
+mkdir -p /mnt/tank/firefox-fork/{woodpecker,woodpecker-agent}
+
+# The images run as a non-root user; find it and hand the directories over.
+uid=$(sudo docker run --rm --entrypoint id woodpeckerci/woodpecker-server:v3 -u)
+sudo chown -R "$uid" /mnt/tank/firefox-fork/woodpecker \
+                     /mnt/tank/firefox-fork/woodpecker-agent
+```
+
+Docker creates a missing bind-mount source itself, but as root, which is why
+this surfaces as `unable to open database file: no such file or directory`
+rather than a permission error.
+
 ## 2. Get the config files onto the NAS
 
 The builder clones the full source itself, so this is only to obtain
