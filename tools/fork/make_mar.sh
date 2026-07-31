@@ -47,14 +47,35 @@ if [ -z "$VERSION" ] || [ -z "$BUILDID" ]; then
   exit 1
 fi
 
+# mar is a HostProgram and signmar a Program (modules/libmar/tool/moz.build),
+# so they land in different places: dist/host/bin and dist/bin respectively.
 MAR_BIN="$OBJDIR/dist/host/bin/mar"
-SIGNMAR_BIN="$OBJDIR/dist/host/bin/signmar"
-for bin in "$MAR_BIN" "$SIGNMAR_BIN"; do
-  if [ ! -x "$bin" ]; then
-    echo "ERROR: $bin not found or not executable." >&2
-    exit 1
-  fi
-done
+
+# For a cross-compiled target, dist/bin/signmar is built for that target and
+# cannot run here -- a win64 build produces a Windows executable. Signing is
+# architecture-independent, so FORK_SIGNMAR lets the caller pass a native one
+# built for the host.
+SIGNMAR_BIN="${FORK_SIGNMAR:-$OBJDIR/dist/bin/signmar}"
+
+if [ ! -x "$MAR_BIN" ]; then
+  echo "ERROR: $MAR_BIN not found or not executable." >&2
+  exit 1
+fi
+
+if [ ! -x "$SIGNMAR_BIN" ]; then
+  echo "ERROR: $SIGNMAR_BIN not found or not executable." >&2
+  exit 1
+fi
+
+# Catch a cross-built signmar before it is used: exec failure reports 126/127,
+# which is otherwise easy to mistake for a signing error.
+"$SIGNMAR_BIN" -h >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ]; then
+  echo "ERROR: $SIGNMAR_BIN cannot be executed on this host -- it was probably" >&2
+  echo "built for the target. Set FORK_SIGNMAR to a host-native signmar." >&2
+  exit 1
+fi
 
 UNSIGNED="$OUTDIR/firefox-$VERSION.$TARGET.complete.unsigned.mar"
 SIGNED="$OUTDIR/firefox-$VERSION.$TARGET.complete.mar"

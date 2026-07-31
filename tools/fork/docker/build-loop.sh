@@ -328,6 +328,24 @@ build_target() {
   fi
 
   log "Object directory for $target: $FORK_OBJDIR"
+
+  # Remember the first signmar that actually runs here. signmar is a Program,
+  # not a HostProgram (modules/libmar/tool/moz.build), so a cross-compiled
+  # target builds one for that target -- win64 produces a Windows executable.
+  # Signing does not care about architecture, so the native build's copy is
+  # reused for every subsequent target.
+  if [ -z "${FORK_SIGNMAR:-}" ]; then
+    local candidate="$FORK_OBJDIR/dist/bin/signmar"
+    if [ -x "$candidate" ]; then
+      "$candidate" -h >/dev/null 2>&1
+      local rc=$?
+      if [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ]; then
+        export FORK_SIGNMAR="$candidate"
+        log "Using signmar from $target: $FORK_SIGNMAR"
+      fi
+    fi
+  fi
+
   return 0
 }
 
