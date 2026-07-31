@@ -6,11 +6,17 @@
 
 FROM debian:bookworm
 
+# CARGO_HOME and RUSTUP_HOME point at the state volume because mach bootstrap
+# installs Rust with rustup, which otherwise writes to $HOME/.cargo -- inside
+# the container, and therefore lost whenever the container is recreated.
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
     MOZBUILD_STATE_PATH=/state/mozbuild \
     SCCACHE_DIR=/state/sccache \
-    SCCACHE_CACHE_SIZE=40G
+    SCCACHE_CACHE_SIZE=40G \
+    CARGO_HOME=/state/cargo \
+    RUSTUP_HOME=/state/rustup \
+    PATH=/state/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # `mach bootstrap` installs most build dependencies itself, but it needs a
 # working python/git/curl to get that far. libnss3-tools provides certutil,
