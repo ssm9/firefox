@@ -55,12 +55,19 @@ services:
       # The build needs the persistent state: the checkout, object
       # directories, sccache, signing key, MSVC toolchain and the published
       # tree. Without these every pipeline would start from nothing.
-      WOODPECKER_BACKEND_DOCKER_VOLUMES: >-
-        /mnt/tank/firefox-fork/src:/src,
-        /mnt/tank/firefox-fork/state:/state,
-        /mnt/tank/firefox-fork/obj:/obj,
-        /mnt/tank/firefox-fork/www:/www,
-        /mnt/tank/firefox-fork/vs:/vs
+      # Comma-separated, on one line. A folded scalar would insert a space
+      # after each comma, and Woodpecker splits on the comma alone -- every
+      # entry but the first would become a path with a leading space and
+      # silently fail to mount.
+      # The trailing backslashes are load-bearing: in a double-quoted scalar
+      # they suppress the folded newline, so this stays one comma-separated
+      # value. A plain folded scalar would leave a space after each comma and
+      # every mount but the first would silently fail.
+      WOODPECKER_BACKEND_DOCKER_VOLUMES: "/mnt/tank/firefox-fork/src:/src,\
+        /mnt/tank/firefox-fork/state:/state,\
+        /mnt/tank/firefox-fork/obj:/obj,\
+        /mnt/tank/firefox-fork/www:/www,\
+        /mnt/tank/firefox-fork/vs:/vs"
 
       FORK_UPDATE_HOST: ${FORK_UPDATE_HOST:-firefox-builds.sai.town}
       FORK_UPDATE_SCHEME: ${FORK_UPDATE_SCHEME:-https}
