@@ -717,7 +717,7 @@ step_should_skip() {
   return 1
 }
 
-step_rebase() {
+step_patch() {
   step_should_skip && return 0
   local tag; tag="$(ci_get tag)"
   [ -n "$tag" ] || { log "no tag recorded; run detect first"; return 1; }
@@ -823,11 +823,11 @@ step_finalize() {
 }
 
 run_step() {
-  local cmd="${1:?usage: build-loop.sh step <detect|rebase|build|mar|publish|finalize> [target]}"
+  local cmd="${1:?usage: build-loop.sh step <detect|patch|build|mar|publish|finalize> [target]}"
   shift
   case "$cmd" in
     detect)   step_detect "$@" ;;
-    rebase)   step_rebase "$@" ;;
+    patch)    step_patch "$@" ;;
     build)    step_build "$@" ;;
     mar)      step_mar "$@" ;;
     publish)  step_publish "$@" ;;
