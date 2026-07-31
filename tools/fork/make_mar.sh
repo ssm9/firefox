@@ -62,6 +62,45 @@ if [ -z "$VERSION" ] || [ -z "$BUILDID" ]; then
   exit 1
 fi
 
+# Confirm the updater being shipped actually trusts the key this MAR will be
+# signed with.
+#
+# toolkit/mozapps/update/updater/gen_cert_header.py turns release_primary.der
+# into a `const uint8_t[]`, so the certificate's bytes appear verbatim in the
+# compiled binary and can be searched for directly.
+#
+# This matters because the failure is otherwise invisible until too late: a MAR
+# whose updater embeds a different certificate installs perfectly, and then
+# rejects every subsequent update. The build would look fine and break one
+# release later, on machines already in the field.
+CERT_DER="$FORK_NSS_DIR/release_primary.der"
+if [ ! -s "$CERT_DER" ]; then
+  echo "ERROR: $CERT_DER is missing or empty." >&2
+  exit 1
+fi
+
+UPDATER_BIN="$APPDIR/updater"
+if [ -f "$UPDATER_BIN" ]; then
+  if python3 - "$CERT_DER" "$UPDATER_BIN" <<'PY'
+import sys
+der = open(sys.argv[1], "rb").read()
+blob = open(sys.argv[2], "rb").read()
+sys.exit(0 if der in blob else 1)
+PY
+  then
+    echo "Updater embeds the fork certificate"
+  else
+    echo "ERROR: $UPDATER_BIN does not embed $CERT_DER." >&2
+    echo "It was built before install_mar_cert ran, so it trusts a different" >&2
+    echo "certificate. Publishing this would install fine and then reject every" >&2
+    echo "later update. Rebuild with the certificate in place." >&2
+    exit 1
+  fi
+else
+  echo "WARNING: no updater at $UPDATER_BIN; cannot confirm which certificate" >&2
+  echo "this build trusts." >&2
+fi
+
 # mar is a HostProgram and signmar a Program (modules/libmar/tool/moz.build),
 # so they land in different places: dist/host/bin and dist/bin respectively.
 MAR_BIN="$OBJDIR/dist/host/bin/mar"
@@ -138,16 +177,12 @@ rm -f "$UNSIGNED"
 # check an installed build performs.
 echo "Verifying signature against the committed certificate"
 
-# Verify against the copy on the state volume, not the one in the source tree.
-# install_mar_cert copies the former over the latter before every build, so the
-# state volume is the authoritative source of what gets compiled in, while the
-# tree copy is transient -- any `git checkout -f` reverts it to upstream's, and
-# the loop does exactly that at the start of each cycle.
-CERT_DER="$FORK_NSS_DIR/release_primary.der"
-if [ ! -s "$CERT_DER" ]; then
-  echo "ERROR: $CERT_DER is missing or empty." >&2
-  exit 1
-fi
+# CERT_DER is the copy on the state volume, resolved above. Deliberately not
+# the one in the source tree: install_mar_cert copies the former over the
+# latter before every build, so the state volume is the authoritative source of
+# what gets compiled in, while the tree copy is transient -- any
+# `git checkout -f` reverts it to upstream's, and the loop does exactly that at
+# the start of each cycle.
 
 # If the tree disagrees, the build may have been made with a different
 # certificate. Not fatal on its own: it also happens whenever the tree is
