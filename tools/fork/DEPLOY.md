@@ -296,6 +296,49 @@ rm /mnt/tank/firefox-fork/state/last-built
 sudo docker restart firefox-fork-builder
 ```
 
+### Running one step by hand
+
+`make_mar.sh` takes the object directory as an argument, so packaging and
+signing can be re-run on an existing build without going through a whole cycle.
+Two variables the loop normally supplies have to be set explicitly: without
+`FORK_NSS_DIR` config.sh falls back to `$HOME/.ssm9-mar-nss`, and `FORK_SIGNMAR`
+selects a host-native signmar.
+
+```sh
+OBJ=/src/firefox/obj-x86_64-pc-linux-gnu
+
+sudo docker exec -it firefox-fork-builder bash -c "
+  set -x
+  export FORK_NSS_DIR=/state/mar-nss
+  export FORK_SIGNMAR=$OBJ/dist/bin/signmar
+  git config --global --add safe.directory /src/firefox
+  rm -rf /tmp/martest && mkdir -p /tmp/martest
+  /src/firefox/tools/fork/make_mar.sh linux64 $OBJ /tmp/martest
+"
+```
+
+`set -x` traces every command, so the failing one is visible directly rather
+than inferred from an exit status.
+
+The pieces it depends on, checkable individually:
+
+```sh
+# the two tools, in the two different places they are built
+sudo docker exec firefox-fork-builder ls -l \
+  /src/firefox/obj-x86_64-pc-linux-gnu/dist/host/bin/mar \
+  /src/firefox/obj-x86_64-pc-linux-gnu/dist/bin/signmar
+
+# signmar runs here, and its usage text
+sudo docker exec firefox-fork-builder \
+  /src/firefox/obj-x86_64-pc-linux-gnu/dist/bin/signmar 2>&1 | head -20
+
+# the signing key and certificates
+sudo docker exec firefox-fork-builder ls -l /state/mar-nss
+sudo docker exec firefox-fork-builder certutil -L -d /state/mar-nss
+```
+
+The loop only polls every six hours, so it will be asleep and will not interfere.
+
 ### Watching a build
 
 Firefox is roughly 35k compilation units, so sccache's request count is the
