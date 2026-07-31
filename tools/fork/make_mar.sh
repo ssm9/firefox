@@ -84,8 +84,12 @@ fi
 
 # Catch a cross-built signmar before it is used: exec failure reports 126/127,
 # which is otherwise easy to mistake for a signing error.
-"$SIGNMAR_BIN" -h >/dev/null 2>&1
-rc=$?
+#
+# `|| rc=$?` is required. signmar exits non-zero for a usage message, and under
+# `set -e` a bare invocation kills the script before the status can be read --
+# so this check, meant to produce a clearer error, became one itself.
+rc=0
+"$SIGNMAR_BIN" -h >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ]; then
   echo "ERROR: $SIGNMAR_BIN cannot be executed on this host -- it was probably" >&2
   echo "built for the target. Set FORK_SIGNMAR to a host-native signmar." >&2
