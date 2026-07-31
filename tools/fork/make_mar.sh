@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+# Report where an unexpected failure happened. Without this, any command that
+# trips `set -e` outside an explicit check kills the script with no output at
+# all, which from the build loop is indistinguishable from a signing error.
+trap 'echo "ERROR: make_mar.sh line $LINENO failed: $BASH_COMMAND" >&2' ERR
+
 TARGET="${1:?usage: make_mar.sh <target> <objdir> <outdir>}"
 OBJDIR="${2:?usage: make_mar.sh <target> <objdir> <outdir>}"
 OUTDIR="${3:?usage: make_mar.sh <target> <objdir> <outdir>}"
@@ -35,15 +40,25 @@ if [ ! -d "$APPDIR" ]; then
   exit 1
 fi
 
-VERSION="$(cat "$OBJDIR/dist/bin/application.ini" 2>/dev/null \
-  | sed -n 's/^Version=//p' | head -1)"
-if [ -z "$VERSION" ]; then
-  VERSION="$(sed -n 's/^Version=//p' "$APPDIR/application.ini" | head -1)"
+# Read straight from the packaged application, which the check above has
+# already confirmed exists.
+#
+# The previous version tried $OBJDIR/dist/bin/application.ini first with stderr
+# discarded and fell back to this one. Under `set -e` with `pipefail` that
+# could never work: a missing file made cat fail, pipefail propagated it, and
+# the script exited before reaching the fallback -- silently, because stderr
+# was redirected away.
+APPINI="$APPDIR/application.ini"
+if [ ! -f "$APPINI" ]; then
+  echo "ERROR: $APPINI not found." >&2
+  exit 1
 fi
-BUILDID="$(sed -n 's/^BuildID=//p' "$APPDIR/application.ini" | head -1)"
+
+VERSION="$(sed -n 's/^Version=//p' "$APPINI" | head -1)"
+BUILDID="$(sed -n 's/^BuildID=//p' "$APPINI" | head -1)"
 
 if [ -z "$VERSION" ] || [ -z "$BUILDID" ]; then
-  echo "ERROR: could not read Version/BuildID from application.ini" >&2
+  echo "ERROR: could not read Version/BuildID from $APPINI" >&2
   exit 1
 fi
 
