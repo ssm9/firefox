@@ -182,12 +182,19 @@ ensure_source() {
 
   git fetch origin --prune || die "fetch origin failed"
 
-  # Force, because install_mar_cert leaves the certificates modified in the
-  # working tree. Without -f this fails from the second cycle onwards, and a
-  # dirty tree would also make the rebase below refuse to start. Discarding is
-  # safe: the certificates are reinstalled from the state volume every build.
-  git checkout -f -B fork-build "origin/$FORK_BRANCH" \
-    || die "could not check out $FORK_BRANCH"
+  # Only check out when the tree is not already usable. This used to run every
+  # cycle, which was expensive: it reset the tree from its rebased state back
+  # to origin's, and rebase_onto then rewrote it forward again. Every file
+  # differing between mozilla-central and the release tag was rewritten twice
+  # per cycle, and the resulting mtime churn made make rebuild far more than
+  # the content actually required. rebase_onto does its own checkout when it
+  # genuinely needs to.
+  if ! git rev-parse --verify --quiet fork-build >/dev/null 2>&1 \
+      || [ ! -f "$SRC/tools/fork/config.sh" ]; then
+    log "Checking out $FORK_BRANCH"
+    git checkout -f -B fork-build "origin/$FORK_BRANCH" \
+      || die "could not check out $FORK_BRANCH"
+  fi
 }
 
 ensure_bootstrap() {
@@ -209,6 +216,23 @@ ensure_bootstrap() {
   ./mach --no-interactive bootstrap --application-choice browser \
     || die "mach bootstrap failed"
   touch "$STATE/.bootstrapped"
+}
+
+# mach bootstrap installs only the host Rust target. Cross-compiling needs the
+# target's standard library too, or configure fails its trial compile with
+# "can't find crate for `std`".
+ensure_rust_target() {
+  local rust_target="$1"
+
+  if rustup target list --installed 2>/dev/null | grep -qx "$rust_target"; then
+    return 0
+  fi
+
+  log "Adding Rust target $rust_target"
+  rustup target add "$rust_target" || {
+    log "ERROR: could not add Rust target $rust_target"
+    return 1
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -237,6 +261,22 @@ echo 4eb5d723d627edec42ca3e5d606e1227c656dfca > $STATE/fork-base"
   git fetch upstream "refs/tags/$tag:refs/tags/$tag" \
     || die "could not fetch tag $tag"
 
+  # Skip the whole thing when nothing that determines the result has changed.
+  # Rebasing again would produce an identical tree, but only after resetting to
+  # origin and rewriting every file that differs from the release tag -- twice.
+  # The mtime churn alone forces a near-total rebuild, which on a retry after a
+  # single target failed is pure waste.
+  local origin_sha head_sha marker
+  origin_sha="$(git rev-parse "origin/$FORK_BRANCH")"
+  head_sha="$(git rev-parse HEAD 2>/dev/null || echo none)"
+  marker="$tag $origin_sha $old_base $head_sha"
+
+  if [ -f "$STATE/last-rebase" ] \
+      && [ "$(cat "$STATE/last-rebase")" = "$marker" ]; then
+    log "Tree already rebased onto $tag and unchanged since; skipping rebase"
+    return 0
+  fi
+
   # -f discards the certificates install_mar_cert wrote into the tree last
   # cycle; git rebase refuses to run with a dirty working tree.
   git checkout -f -B fork-build "origin/$FORK_BRANCH" || die "checkout failed"
@@ -246,8 +286,14 @@ echo 4eb5d723d627edec42ca3e5d606e1227c656dfca > $STATE/fork-base"
   if ! git rebase --onto "refs/tags/$tag" "$old_base" fork-build; then
     git rebase --abort 2>/dev/null || true
     git checkout -f "origin/$FORK_BRANCH" 2>/dev/null || true
+    rm -f "$STATE/last-rebase"
     return 1
   fi
+
+  # Record what produced this tree so the next cycle can tell it is already
+  # correct. HEAD is included so any manual change to the checkout invalidates
+  # it rather than being silently kept.
+  echo "$tag $origin_sha $old_base $(git rev-parse HEAD)" > "$STATE/last-rebase"
 
   # fork-base is deliberately NOT advanced to $tag.
   #
@@ -329,6 +375,7 @@ build_target() {
 
   if [ "$target" = "win64" ]; then
     ensure_vs || return 1
+    ensure_rust_target x86_64-pc-windows-msvc || return 1
     # WINSYSROOT, not VSPATH: configure reads WINSYSROOT
     # (build/moz.configure/windows-toolchain.configure:62) and expects a
     # directory containing VC, "Windows Kits/10" and DIA SDK, which is what
