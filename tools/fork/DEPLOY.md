@@ -270,12 +270,19 @@ MAR signature against the certificate compiled into the updater:
 # signmar's -D DERFilePath form is compiled out on Linux (MAR_NSS is always
 # defined there), so verification goes through a throwaway NSS database
 # holding the certificate that is compiled into the updater.
+#
+# The certificate comes from /state/mar-nss, never from the source tree. For a
+# custom update channel the build reads dep1.der rather than release_primary.der
+# (toolkit/mozapps/update/updater/moz.build:66), so install_mar_cert writes
+# there and the tree's release_primary.der stays Mozilla's for good. Verifying
+# against it fails with "Error verifying signature", which looks alarming and
+# means nothing.
 sudo docker exec -it firefox-fork-builder bash -c '
   OBJ=/src/firefox/obj-x86_64-pc-linux-gnu
   DB=$(mktemp -d); PW=$(mktemp); printf "\n" > "$PW"
   certutil -N -d "$DB" -f "$PW"
   certutil -A -d "$DB" -f "$PW" -n forkverify -t ",," \
-    -i /src/firefox/toolkit/mozapps/update/updater/release_primary.der
+    -i /state/mar-nss/release_primary.der
   $OBJ/dist/bin/signmar -d "$DB" -n forkverify -v \
     /www/downloads/<version>/firefox-<version>.linux64.complete.mar
   rm -rf "$DB" "$PW"

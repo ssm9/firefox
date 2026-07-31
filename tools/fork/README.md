@@ -331,7 +331,7 @@ sudo docker exec -it firefox-fork-builder bash -c '
   DB=$(mktemp -d); PW=$(mktemp); printf "\n" > "$PW"
   certutil -N -d "$DB" -f "$PW"
   certutil -A -d "$DB" -f "$PW" -n forkverify -t ",," \
-    -i /src/firefox/toolkit/mozapps/update/updater/release_primary.der
+    -i /state/mar-nss/release_primary.der
   $OBJ/dist/bin/signmar -d "$DB" -n forkverify -v \
     /www/downloads/<version>/firefox-<version>.linux64.complete.mar
   rm -rf "$DB" "$PW"
