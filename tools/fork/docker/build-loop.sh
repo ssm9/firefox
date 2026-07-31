@@ -175,16 +175,22 @@ tools/fork/gen_mar_key.sh and put its output on the state volume."
 # updated without touching $SRC at all.
 ensure_tools() {
   if [ ! -d "$TOOLS/.git" ]; then
+    # --depth=1 matters. Without it a blobless clone still fetches every commit
+    # and tree in mozilla-central's history -- gigabytes, for a checkout that
+    # only ever needs the branch tip. With it this is well under 100 MB.
     log "Cloning tooling from $FORK_REPO branch $FORK_BRANCH"
-    git clone --filter=blob:none --sparse --branch "$FORK_BRANCH" \
+    git clone --depth=1 --filter=blob:none --sparse --branch "$FORK_BRANCH" \
       "$FORK_REPO" "$TOOLS" || die "tooling clone failed"
     git -C "$TOOLS" sparse-checkout set tools/fork .woodpecker \
       || die "sparse-checkout failed"
   fi
 
   git config --global --add safe.directory "$TOOLS"
-  git -C "$TOOLS" fetch origin --prune || die "tooling fetch failed"
-  git -C "$TOOLS" checkout -f -B fork-tools "origin/$FORK_BRANCH" \
+  # --depth=1 again: the clone is shallow, and a full fetch would pull in the
+  # history it was created to avoid.
+  git -C "$TOOLS" fetch --depth=1 origin "$FORK_BRANCH" \
+    || die "tooling fetch failed"
+  git -C "$TOOLS" checkout -f -B fork-tools FETCH_HEAD \
     || die "could not check out tooling"
 
   [ -f "$FORK/config.sh" ] || die "tooling checkout has no tools/fork/config.sh"
