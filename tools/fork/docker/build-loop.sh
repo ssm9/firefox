@@ -31,6 +31,11 @@ export CARGO_HOME=/state/cargo
 export RUSTUP_HOME=/state/rustup
 export PATH="$CARGO_HOME/bin:$PATH"
 
+# Built MARs and installers, staged here between packaging and publishing.
+# Deliberately on the state volume rather than /tmp: under CI each phase runs
+# in its own container, so anything left in /tmp is invisible to the next step.
+ARTIFACTS="${FORK_ARTIFACTS:-$STATE/artifacts}"
+
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 
 # Pause before exiting. The container restarts automatically, and every fatal
@@ -457,28 +462,38 @@ build_target() {
 # Publish
 # ---------------------------------------------------------------------------
 
-publish() {
-  local version="$1"
-  shift
-  local metadata=("$@")
+# Publish one target. Targets are independent -- each has its own MAR and its
+# own manifest paths -- so this is safe to run for two targets concurrently,
+# and lets one ship as soon as it is ready instead of waiting for the other.
+publish_target() {
+  local version="$1" target="$2" meta="$3"
+
+  if [ ! -s "$meta" ]; then
+    log "ERROR: no metadata at $meta for $target"
+    return 1
+  fi
 
   local dl_dir="$WWW/downloads/$version"
   mkdir -p "$dl_dir"
 
-  # Order matters: the MARs must be downloadable *before* any manifest points
-  # at them, or a client that checks in between sees a manifest referencing a
-  # 404 and records a failed update.
-  log "Publishing artifacts for $version"
-  cp -f /tmp/fork-artifacts/*.mar "$dl_dir/" || return 1
-  cp -f /tmp/fork-artifacts/*.tar.xz "$dl_dir/" 2>/dev/null || true
-  cp -f /tmp/fork-artifacts/*.zip "$dl_dir/" 2>/dev/null || true
+  # Order matters: the MAR must be downloadable *before* the manifest points at
+  # it, or a client checking in between sees a manifest referencing a 404 and
+  # records a failed update.
+  log "Publishing $target artifacts for $version"
+  cp -f "$ARTIFACTS/firefox-$version.$target.complete.mar" "$dl_dir/" || return 1
+  case "$target" in
+    linux64) cp -f "$ARTIFACTS"/*.tar.xz "$dl_dir/" 2>/dev/null || true ;;
+    win64)   cp -f "$ARTIFACTS"/*.zip "$dl_dir/" 2>/dev/null || true ;;
+  esac
   sync
 
-  log "Publishing manifests"
-  local staging="$WWW/.manifests-staging"
+  # Staging is per target. A shared directory would be removed and rewritten by
+  # whichever publish ran second, discarding the other's manifests.
+  log "Publishing $target manifests"
+  local staging="$WWW/.manifests-staging-$target"
   rm -rf "$staging"
   python3 "$SRC/tools/fork/gen_update_manifest.py" \
-    --metadata "${metadata[@]}" \
+    --metadata "$meta" \
     --outdir "$staging" \
     --channel "$FORK_CHANNEL" \
     --release-base-url "$FORK_DOWNLOAD_BASE_URL/$version" || return 1
@@ -488,6 +503,20 @@ publish() {
   rm -rf "$staging"
   sync
   return 0
+}
+
+# Loop entry point: publish every target that produced metadata. Shares
+# publish_target with the CI path so the two cannot diverge.
+publish() {
+  local version="$1"
+  shift
+  local meta target rc=0
+
+  for meta in "$@"; do
+    target="$(basename "$meta" .mar.json)"
+    publish_target "$version" "$target" "$meta" || rc=1
+  done
+  return "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -535,8 +564,8 @@ refs/tags/$tag \$(cat $STATE/fork-base) $FORK_BRANCH"
   install_mar_cert
   ensure_bootstrap
 
-  rm -rf /tmp/fork-artifacts
-  mkdir -p /tmp/fork-artifacts
+  rm -rf "$ARTIFACTS"
+  mkdir -p "$ARTIFACTS"
 
   # Targets are independent: each produces its own MAR and its own manifest, so
   # one failing is no reason to withhold the others. A target with no manifest
@@ -557,18 +586,18 @@ refs/tags/$tag \$(cat $STATE/fork-base) $FORK_BRANCH"
 
     # FORK_OBJDIR is set by build_target from mach's own view of the tree.
     if ! "$SRC/tools/fork/make_mar.sh" "$target" \
-        "$FORK_OBJDIR" /tmp/fork-artifacts; then
+        "$FORK_OBJDIR" "$ARTIFACTS"; then
       log "MAR packaging or signing failed for $target; continuing"
       failed="$failed $target"
       continue
     fi
 
     case "$target" in
-      linux64) cp -f "$FORK_OBJDIR"/dist/*.tar.xz /tmp/fork-artifacts/ 2>/dev/null || true ;;
-      win64)   cp -f "$FORK_OBJDIR"/dist/*.zip /tmp/fork-artifacts/ 2>/dev/null || true ;;
+      linux64) cp -f "$FORK_OBJDIR"/dist/*.tar.xz "$ARTIFACTS"/ 2>/dev/null || true ;;
+      win64)   cp -f "$FORK_OBJDIR"/dist/*.zip "$ARTIFACTS"/ 2>/dev/null || true ;;
     esac
 
-    metadata+=("/tmp/fork-artifacts/$target.mar.json")
+    metadata+=("$ARTIFACTS/$target.mar.json")
     built="$built $target"
   done
 
@@ -697,48 +726,65 @@ step_mar() {
   local objdir; objdir="$(ci_get "objdir-$target")"
   [ -n "$objdir" ] || { log "no object directory for $target; run build first"; return 1; }
 
-  mkdir -p /tmp/fork-artifacts
-  "$SRC/tools/fork/make_mar.sh" "$target" "$objdir" /tmp/fork-artifacts || return 1
+  mkdir -p "$ARTIFACTS"
+  "$SRC/tools/fork/make_mar.sh" "$target" "$objdir" "$ARTIFACTS" || return 1
 
   case "$target" in
-    linux64) cp -f "$objdir"/dist/*.tar.xz /tmp/fork-artifacts/ 2>/dev/null || true ;;
-    win64)   cp -f "$objdir"/dist/*.zip /tmp/fork-artifacts/ 2>/dev/null || true ;;
+    linux64) cp -f "$objdir"/dist/*.tar.xz "$ARTIFACTS"/ 2>/dev/null || true ;;
+    win64)   cp -f "$objdir"/dist/*.zip "$ARTIFACTS"/ 2>/dev/null || true ;;
   esac
 
   ci_set "mar-$target" ok
   return 0
 }
 
+# Publish a single target, as soon as it is ready. Running this per target
+# means a slow or failing win64 no longer delays a finished linux64.
 step_publish() {
+  step_should_skip && return 0
+  local target="${1:?usage: step publish <target>}"
+  local version; version="$(ci_get version)"
+
+  if [ -z "$(ci_get "mar-$target")" ]; then
+    log "No MAR for $target; nothing to publish"
+    return 1
+  fi
+
+  publish_target "$version" "$target" "$ARTIFACTS/$target.mar.json" || {
+    notify "Publishing failed for $target on $version."
+    return 1
+  }
+
+  ci_set "published-$target" ok
+  notify "Published $version for $target"
+  write_status "building" "published $target" "$version"
+  return 0
+}
+
+# Runs after every target. Owns last-built, which cannot be written by the
+# per-target steps: recording it while a target is still failing would mark the
+# release done and stop it ever being retried.
+step_finalize() {
   step_should_skip && return 0
   local version; version="$(ci_get version)"
 
-  local metadata=() built="" failed="" target
+  local built="" failed="" target
   for target in $FORK_TARGETS; do
-    if [ -n "$(ci_get "mar-$target")" ]; then
-      metadata+=("/tmp/fork-artifacts/$target.mar.json")
+    if [ -n "$(ci_get "published-$target")" ]; then
       built="$built $target"
     else
       failed="$failed $target"
     fi
   done
 
-  if [ "${#metadata[@]}" -eq 0 ]; then
-    notify "No target built successfully for $version. Nothing published."
+  if [ -z "$built" ]; then
+    notify "No target published for $version. Failed:$failed"
     write_status "failed" "all targets failed:$failed" "$version"
     return 1
   fi
 
-  publish "$version" "${metadata[@]}" || {
-    notify "Publishing failed for $version."
-    write_status "failed" "publish failed" "$version"
-    return 1
-  }
-
   if [ -n "$failed" ]; then
-    # last-built stays unrecorded so the next run retries the failing targets
-    # rather than treating the release as done.
-    notify "Published $version for:$built -- still failing:$failed"
+    notify "Published $version for:$built -- still failing:$failed. Will retry."
     write_status "partial" "published:$built failing:$failed" "$version"
     return 1
   fi
@@ -750,14 +796,15 @@ step_publish() {
 }
 
 run_step() {
-  local cmd="${1:?usage: build-loop.sh step <detect|rebase|build|mar|publish> [target]}"
+  local cmd="${1:?usage: build-loop.sh step <detect|rebase|build|mar|publish|finalize> [target]}"
   shift
   case "$cmd" in
-    detect)  step_detect "$@" ;;
-    rebase)  step_rebase "$@" ;;
-    build)   step_build "$@" ;;
-    mar)     step_mar "$@" ;;
-    publish) step_publish "$@" ;;
+    detect)   step_detect "$@" ;;
+    rebase)   step_rebase "$@" ;;
+    build)    step_build "$@" ;;
+    mar)      step_mar "$@" ;;
+    publish)  step_publish "$@" ;;
+    finalize) step_finalize "$@" ;;
     *) log "unknown step: $cmd"; return 1 ;;
   esac
 }
