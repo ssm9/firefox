@@ -29,16 +29,35 @@ VALIDITY_MONTHS="${VALIDITY_MONTHS:-120}"
 mkdir -p "$FORK_NSS_DIR"
 chmod 700 "$FORK_NSS_DIR"
 
-# Empty password: the database is protected by filesystem permissions and, in
-# CI, by being reconstructed from a secret on each run.
+# Empty password: the database is protected by filesystem permissions.
+# The file holds a single newline rather than being truly empty -- certutil
+# reports "password file contains no data" on a zero-byte file.
 PWFILE="$(mktemp)"
-trap 'rm -f "$PWFILE" noise.bin' EXIT
-: > "$PWFILE"
+: > "$FORK_NSS_DIR/.incomplete"
+
+# Remove a half-built database on any failure. Leaving one behind is worse than
+# useless: the guard at the top of this script would then refuse to re-run,
+# while the database contains no usable key.
+cleanup() {
+  rm -f "$PWFILE" noise.bin
+  if [ -e "$FORK_NSS_DIR/.incomplete" ]; then
+    echo "Cleaning up incomplete database at $FORK_NSS_DIR" >&2
+    rm -rf "$FORK_NSS_DIR"
+  fi
+}
+trap cleanup EXIT
+
+printf '\n' > "$PWFILE"
 
 certutil -N -d "$FORK_NSS_DIR" -f "$PWFILE"
 
 # certutil wants entropy from a file for key generation.
 dd if=/dev/urandom of=noise.bin bs=32 count=1 status=none
+
+# certutil parses the serial with PORT_Atoi, so it must fit in a signed 32-bit
+# int. A full 4 bytes of /dev/urandom overflows that about half the time and is
+# rejected outright, so fold it into range.
+SERIAL="$(( $(od -An -N4 -tu4 < /dev/urandom | tr -d ' ') % 2147483647 + 1 ))"
 
 certutil -S \
   -d "$FORK_NSS_DIR" \
@@ -48,7 +67,7 @@ certutil -S \
   -s "CN=$FORK_MAR_CERT_NICKNAME,O=ssm9 firefox fork" \
   -x \
   -t ",," \
-  -m "$(od -An -N4 -tu4 < /dev/urandom | tr -d ' ')" \
+  -m "$SERIAL" \
   -v "$VALIDITY_MONTHS" \
   -k rsa -g 4096 \
   -Z SHA384 \
@@ -67,6 +86,14 @@ certutil -L -d "$FORK_NSS_DIR" -n "$FORK_MAR_CERT_NICKNAME" -r \
 # stranding clients: publish a build trusting both, then start signing with the
 # new one. Until there is a second key, both slots hold the same certificate.
 cp "$FORK_NSS_DIR/release_primary.der" "$FORK_NSS_DIR/release_secondary.der"
+
+if [ ! -s "$FORK_NSS_DIR/release_primary.der" ]; then
+  echo "ERROR: exported certificate is empty" >&2
+  exit 1
+fi
+
+# Everything succeeded; stop the trap from tearing the database down.
+rm -f "$FORK_NSS_DIR/.incomplete"
 
 echo
 echo "Signing key and certificate created in $FORK_NSS_DIR"
