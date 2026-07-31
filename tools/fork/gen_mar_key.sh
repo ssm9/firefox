@@ -59,6 +59,12 @@ dd if=/dev/urandom of=noise.bin bs=32 count=1 status=none
 # rejected outright, so fold it into range.
 SERIAL="$(( $(od -An -N4 -tu4 < /dev/urandom | tr -d ' ') % 2147483647 + 1 ))"
 
+# No extension flags (-1 keyUsage, -2 basicConstraints, -5 nsCertType).
+# They prompt interactively, which hangs an automated run, and they are not
+# wanted anyway: Mozilla's own release_primary.der carries no X509v3 extensions
+# at all, and its notBefore equals its notAfter. The updater extracts the public
+# key and verifies the signature directly -- no chain building, no extension
+# processing, no expiry check -- so anything beyond the key is inert.
 certutil -S \
   -d "$FORK_NSS_DIR" \
   -f "$PWFILE" \
@@ -70,8 +76,7 @@ certutil -S \
   -m "$SERIAL" \
   -v "$VALIDITY_MONTHS" \
   -k rsa -g 4096 \
-  -Z SHA384 \
-  -1 -2 -5 --keyUsage digitalSignature,nonRepudiation
+  -Z SHA384
 
 # The certificate is written next to the key rather than into the source tree.
 # The build loop copies it over toolkit/mozapps/update/updater/release_*.der
