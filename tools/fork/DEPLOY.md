@@ -306,8 +306,15 @@ over. Rebuild it from `/src`, which is already the verified-correct source:
 ```sh
 cd /mnt/tank/firefox-fork/src/firefox/tools/fork/docker
 sudo docker build -t firefox-fork-builder:latest .
-sudo docker restart firefox-fork-builder
+
+# The container MUST be recreated, not restarted. `docker restart` stops and
+# starts the same container, and a container is bound to the image it was
+# created from -- so a restart silently keeps running the old image.
+sudo docker rm -f firefox-fork-builder
 ```
+
+Then start the app from the TrueNAS UI, which recreates the container from the
+rebuilt image.
 
 Look for `In-tree build loop differs from the image copy; handing over to it` to
 confirm the handover is working.
