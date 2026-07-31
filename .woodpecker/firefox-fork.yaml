@@ -19,6 +19,17 @@
 # pipeline would be absurd -- the Firefox tree alone is over 6 GB.
 skip_clone: true
 
+# Only the cron and the Run button. Push events are pointless here: Woodpecker
+# sits behind WireGuard, so GitHub cannot deliver a webhook to it, and a push
+# to this branch is usually a patch edit rather than a request to spend hours
+# rebuilding. Stating it also stops an unexpected event type starting a build.
+#
+# The cron must name the branch. Left unset it uses the repository default,
+# which is upstream's main -- no .woodpecker directory there, so the run finds
+# no pipeline and silently succeeds having done nothing.
+when:
+  - event: [cron, manual]
+
 steps:
   - name: detect
     image: firefox-fork-builder:latest
