@@ -200,21 +200,33 @@ and that failure looks exactly like "no update available".
 
 ## 9. First build
 
-Trigger a single cycle instead of waiting for the 6-hour poll, so you can watch
-it end to end:
+Just start the app. The loop runs a cycle immediately on startup and only then
+sleeps until the next poll, so starting it *is* triggering the first build —
+there is nothing extra to kick off.
+
+Start it from the TrueNAS UI, or:
 
 ```sh
-sudo docker stop firefox-fork-builder
-sudo docker run --rm -it \
-  -e RUN_ONCE=1 \
-  -e FORK_UPDATE_HOST=firefox-builds.sai.town \
-  -e FORK_UPDATE_SCHEME=https \
-  -v /mnt/tank/firefox-fork/src:/src \
-  -v /mnt/tank/firefox-fork/state:/state \
-  -v /mnt/tank/firefox-fork/obj:/obj \
-  -v /mnt/tank/firefox-fork/www:/www \
-  -v /mnt/tank/firefox-fork/vs:/vs \
-  firefox-fork-builder:latest
+sudo docker start firefox-fork-builder
+sudo docker logs -f firefox-fork-builder
+```
+
+Detaching from `docker logs` does not stop the build; the container keeps
+running. Reattach any time with the same command.
+
+> **Do not run a second one-off container to "watch" the build.** It would share
+> `/obj` and `/www` with the app's container, and two builds writing the same
+> object directory corrupt each other. It would also die the moment your SSH
+> session drops, which for a multi-hour build is a near certainty.
+>
+> `RUN_ONCE=1` exists for debugging a single cycle, but only ever with the app
+> container stopped first, and ideally detached (`-d`) rather than `-it` so a
+> dropped connection does not kill it.
+
+Confirm exactly one builder is running:
+
+```sh
+sudo docker ps --filter name=firefox-fork
 ```
 
 The first run does a lot of one-time work: `mach bootstrap` fetches toolchains,
