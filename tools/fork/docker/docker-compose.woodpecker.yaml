@@ -10,11 +10,30 @@
 # Settings > Developer settings > OAuth Apps with the callback URL
 # https://<woodpecker-host>/authorize.
 #
-# Install alongside docker-compose.yaml, not instead of it -- keep the builder
-# container stopped while Woodpecker drives builds, or both will compete for
-# the same object directories.
+# Install this INSTEAD of docker-compose.yaml, not alongside it. It contains
+# everything the other one does except the polling loop, which Woodpecker
+# replaces: nginx still serves /www, and builds run as pipeline containers.
+#
+# Running both would put two builders on the same object directories, which
+# corrupts builds, and two nginx containers on the same port.
 
 services:
+  # ---------------------------------------------------------------------
+  # nginx: serves manifests and MARs. Unchanged from docker-compose.yaml.
+  #
+  # Independent of the build: it only reads /www, so it keeps serving updates
+  # while a pipeline runs, and stays up between them.
+  # ---------------------------------------------------------------------
+  web:
+    image: nginx:alpine
+    container_name: firefox-fork-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8088}:80"
+    volumes:
+      - /mnt/tank/firefox-fork/www:/www:ro
+      - /mnt/tank/firefox-fork/config/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
   woodpecker-server:
     image: woodpeckerci/woodpecker-server:latest
     container_name: woodpecker-server
