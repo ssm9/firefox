@@ -35,7 +35,7 @@ services:
       - /mnt/tank/firefox-fork/config/nginx.conf:/etc/nginx/conf.d/default.conf:ro
 
   woodpecker-server:
-    image: woodpeckerci/woodpecker-server:latest
+    image: woodpeckerci/woodpecker-server:v3
     container_name: woodpecker-server
     restart: unless-stopped
     ports:
@@ -61,7 +61,7 @@ services:
       - /mnt/tank/firefox-fork/woodpecker:/var/lib/woodpecker
 
   woodpecker-agent:
-    image: woodpeckerci/woodpecker-agent:latest
+    image: woodpeckerci/woodpecker-agent:v3
     container_name: woodpecker-agent
     restart: unless-stopped
     depends_on:
@@ -74,14 +74,11 @@ services:
       # The build needs the persistent state: the checkout, object
       # directories, sccache, signing key, MSVC toolchain and the published
       # tree. Without these every pipeline would start from nothing.
-      # Comma-separated, on one line. A folded scalar would insert a space
-      # after each comma, and Woodpecker splits on the comma alone -- every
-      # entry but the first would become a path with a leading space and
-      # silently fail to mount.
-      # The trailing backslashes are load-bearing: in a double-quoted scalar
-      # they suppress the folded newline, so this stays one comma-separated
-      # value. A plain folded scalar would leave a space after each comma and
-      # every mount but the first would silently fail.
+      #
+      # The trailing backslashes are load-bearing. Woodpecker splits this on
+      # commas alone, and in a double-quoted scalar the backslash suppresses
+      # the folded newline -- without them every entry after the first would
+      # become a path with a leading space and silently fail to mount.
       WOODPECKER_BACKEND_DOCKER_VOLUMES: "/mnt/tank/firefox-fork/src:/src,\
         /mnt/tank/firefox-fork/state:/state,\
         /mnt/tank/firefox-fork/obj:/obj,\
