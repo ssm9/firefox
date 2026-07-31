@@ -172,17 +172,22 @@ rebase_onto() {
   local tag="$1"
 
   if [ ! -f "$STATE/fork-base" ]; then
-    die "No $STATE/fork-base. Bootstrap it once with the upstream tag that \
-$FORK_BRANCH currently sits on, e.g.: echo FIREFOX_153_0_1_RELEASE > \
-$STATE/fork-base"
+    die "No $STATE/fork-base. It must contain the upstream commit that \
+$FORK_BRANCH is based on -- everything after it is treated as the fork's own \
+work and replayed onto each release. Set it once, e.g.: \
+echo 4eb5d723d627edec42ca3e5d606e1227c656dfca > $STATE/fork-base"
   fi
 
   local old_base
   old_base="$(tr -d '[:space:]' < "$STATE/fork-base")"
 
   cd "$SRC" || die "cannot enter $SRC"
-  git fetch --depth=1 upstream "refs/tags/$tag:refs/tags/$tag" 2>/dev/null \
-    || git fetch upstream "refs/tags/$tag:refs/tags/$tag" \
+
+  # Full fetch, never --depth=1. A shallow fetch grafts the tag in with no
+  # history, so rebase cannot find a merge base for its three-way merges and
+  # reports conflicts on commits that apply perfectly well. It also leaves a
+  # .git/shallow in an otherwise complete clone, which affects later operations.
+  git fetch upstream "refs/tags/$tag:refs/tags/$tag" \
     || die "could not fetch tag $tag"
 
   # -f discards the certificates install_mar_cert wrote into the tree last
@@ -197,7 +202,19 @@ $STATE/fork-base"
     return 1
   fi
 
-  echo "$tag" > "$STATE/fork-base"
+  # fork-base is deliberately NOT advanced to $tag.
+  #
+  # The branch is re-checked-out from origin every cycle and the rebase result
+  # is never pushed, so origin/$FORK_BRANCH stays on its original base forever.
+  # Advancing fork-base would desynchronise the two immediately: the next cycle
+  # would compute its commit list as $tag..origin/$FORK_BRANCH, which is every
+  # upstream commit that diverged since that tag plus the fork's own -- and
+  # would try to replay all of it.
+  #
+  # Keeping fork-base fixed makes each cycle replay exactly the same fork
+  # commits onto whatever tag is current. Idempotent, and nothing to push.
+  # It only changes when the patch series itself is rebased onto a new base,
+  # which is a human action.
   return 0
 }
 
@@ -332,10 +349,11 @@ run_once() {
   write_status "building" "rebasing onto $tag" "$version"
 
   if ! rebase_onto "$tag"; then
-    notify "Rebase conflict on $tag: the onDeterminingFilename patches no \
-longer apply. Upstream changed code the patch touches. No build was published \
-for $version; resolve it on $FORK_BRANCH and push, then update \
-$STATE/fork-base."
+    notify "Rebase conflict on $tag: the onDeterminingFilename patches do not \
+apply. No build was published for $version. Resolve it on $FORK_BRANCH and \
+push; leave $STATE/fork-base alone unless you rebased the series onto a \
+different upstream base. Reproduce it by hand with: git rebase --onto \
+refs/tags/$tag \$(cat $STATE/fork-base) $FORK_BRANCH"
     write_status "conflict" "patch series does not apply to $tag" "$version"
     return 1
   fi
