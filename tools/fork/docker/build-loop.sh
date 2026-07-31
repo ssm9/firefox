@@ -238,13 +238,23 @@ build_target() {
   local target="$1"
   cd "$SRC" || die "cannot enter $SRC"
 
-  export MOZCONFIG="$SRC/browser/config/mozconfigs/$target/fork"
+  export MOZCONFIG="$SRC/tools/fork/mozconfigs/$target"
   export MOZ_OBJDIR="/obj/obj-fork-$target"
   [ -n "$BUILD_JOBS" ] && export MOZ_MAKE_FLAGS="-j$BUILD_JOBS"
 
+  if [ ! -f "$MOZCONFIG" ]; then
+    log "ERROR: no mozconfig at $MOZCONFIG"
+    return 1
+  fi
+
   if [ "$target" = "win64" ]; then
     ensure_vs || return 1
-    export VSPATH=/vs
+    # WINSYSROOT, not VSPATH: configure reads WINSYSROOT
+    # (build/moz.configure/windows-toolchain.configure:62) and expects a
+    # directory containing VC, "Windows Kits/10" and DIA SDK, which is what
+    # get_vs.py produces. Setting it also stops configure trying to bootstrap
+    # a "vs" toolchain, which is not publicly downloadable.
+    export WINSYSROOT=/vs
   fi
 
   log "Building $target"
