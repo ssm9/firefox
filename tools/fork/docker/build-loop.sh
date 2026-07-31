@@ -431,6 +431,18 @@ main() {
   # config.sh lives in the tree, so the clone has to come first. Values already
   # set in the environment by the compose file win over its defaults.
   ensure_source
+
+  # This script is baked into the image, because it has to exist before there
+  # is a checkout to run it from. Once the checkout exists, hand over to the
+  # in-tree copy if it differs, so fixes to the loop take effect by updating
+  # /src rather than rebuilding the image. The guard prevents an exec loop.
+  local intree="$SRC/tools/fork/docker/build-loop.sh"
+  if [ -z "${FORK_LOOP_REEXEC:-}" ] && [ -f "$intree" ] && ! cmp -s "$intree" "$0"; then
+    log "In-tree build loop differs from the image copy; handing over to it"
+    export FORK_LOOP_REEXEC=1
+    exec bash "$intree" "$@"
+  fi
+
   . "$SRC/tools/fork/config.sh" || die "could not source tools/fork/config.sh"
 
   preflight
