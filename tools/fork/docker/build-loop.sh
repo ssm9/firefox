@@ -845,6 +845,15 @@ step_finalize() {
   return 0
 }
 
+handover_to_intree() {
+  local intree="$FORK/docker/build-loop.sh"
+  if [ -z "${FORK_LOOP_REEXEC:-}" ] && [ -f "$intree" ] && ! cmp -s "$intree" "$0"; then
+    log "In-tree build loop differs from the image copy; handing over to it"
+    export FORK_LOOP_REEXEC=1
+    exec bash "$intree" "$@"
+  fi
+}
+
 run_step() {
   local cmd="${1:?usage: build-loop.sh step <detect|patch|build|mar|publish|finalize> [target]}"
   shift
@@ -878,21 +887,25 @@ main() {
   fi
   export FORK_REFRESH
 
-  # config.sh lives in the tree, so the clone has to come first. Values already
-  # set in the environment by the compose file win over its defaults.
+  # This script is baked into the image, because it has to exist before there
+  # is a checkout to run it from. Once the checkout exists, hand over to the
+  # in-tree copy if it differs, so fixes take effect by updating /src rather
+  # than rebuilding the image. The guard prevents an exec loop.
+  #
+  # Deliberately before any git work. Handing over afterwards meant a fault in
+  # ensure_tools killed the run before the in-tree copy loaded, so a fix to
+  # ensure_tools itself could never be delivered through /src -- exactly the
+  # situation the handover exists to avoid.
+  handover_to_intree "$@"
+
+  # config.sh lives in the tooling checkout, so it has to exist by now. Values
+  # already set in the environment by the compose file win over its defaults.
   ensure_tools
   ensure_source
 
-  # This script is baked into the image, because it has to exist before there
-  # is a checkout to run it from. Once the checkout exists, hand over to the
-  # in-tree copy if it differs, so fixes to the loop take effect by updating
-  # /src rather than rebuilding the image. The guard prevents an exec loop.
-  local intree="$FORK/docker/build-loop.sh"
-  if [ -z "${FORK_LOOP_REEXEC:-}" ] && [ -f "$intree" ] && ! cmp -s "$intree" "$0"; then
-    log "In-tree build loop differs from the image copy; handing over to it"
-    export FORK_LOOP_REEXEC=1
-    exec bash "$intree" "$@"
-  fi
+  # Try again: on a first run the checkout did not exist above, and
+  # ensure_tools has just created it.
+  handover_to_intree "$@"
 
   . "$FORK/config.sh" || die "could not source tools/fork/config.sh"
 
