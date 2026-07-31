@@ -315,19 +315,31 @@ runs Woodpecker on the NAS instead, driving the same code: every step is
 
 Compute stays local, so this costs nothing beyond the NAS.
 
+`docker-compose.woodpecker.yaml` **replaces** `docker-compose.yaml` rather than
+sitting beside it. It carries the same nginx service; the only thing it drops is
+the polling loop, which the pipeline replaces. Running both would put two
+builders on the same object directories and two nginx containers on one port.
+
 1. Create a GitHub OAuth app (Settings > Developer settings > OAuth Apps) with
    callback `https://<woodpecker-host>/authorize`.
 2. Generate an agent secret: `openssl rand -hex 32`.
-3. Install `docker-compose.woodpecker.yaml` as a second custom app, setting
-   `WOODPECKER_HOST`, the OAuth client and secret, `WOODPECKER_ADMIN` (your
-   GitHub username) and `WOODPECKER_AGENT_SECRET`.
-4. Proxy it through nginx-proxy-manager the same way as the update server.
+3. Delete the existing custom app, then install
+   `docker-compose.woodpecker.yaml` in its place, setting `WOODPECKER_HOST`,
+   the OAuth client and secret, `WOODPECKER_ADMIN` (your GitHub username),
+   `WOODPECKER_AGENT_SECRET`, and `BUILD_JOBS` at roughly half the core count.
+4. Proxy the Woodpecker port through nginx-proxy-manager, as a second proxy
+   host alongside the update server.
 5. In the Woodpecker UI, enable the `ssm9/firefox` repository, mark it
    **trusted** (the pipeline mounts host paths), and add a cron trigger every
    6 hours.
 
-**Stop the `firefox-fork-builder` container first.** Both drive the same object
-directories, and running them together corrupts builds.
+**Set the branch to `ssm9/fork-build`**, on the cron and on manual runs. The
+repository's default branch is upstream's `main`, which contains no
+`.woodpecker/` directory, so a run against it finds no pipeline and does
+nothing.
+
+Deleting and reinstalling the app touches no state: everything durable lives on
+the dataset, and the containers are disposable.
 
 The pipeline is `.woodpecker/firefox-fork.yaml`:
 
