@@ -300,6 +300,45 @@ next release to be built, let it auto-update, and confirm the extension still
 routes downloads afterwards. Everything else can pass while this fails, and
 this is the entire reason the pipeline exists.
 
+## Optional: run it under Woodpecker CI
+
+The polling loop works, but gives no per-step timing, no history, and no way to
+retry one target without redoing the cycle. `docker-compose.woodpecker.yaml`
+runs Woodpecker on the NAS instead, driving the same code: every step is
+`build-loop.sh step <phase>`, so the loop and the pipeline cannot drift apart.
+
+Compute stays local, so this costs nothing beyond the NAS.
+
+1. Create a GitHub OAuth app (Settings > Developer settings > OAuth Apps) with
+   callback `https://<woodpecker-host>/authorize`.
+2. Generate an agent secret: `openssl rand -hex 32`.
+3. Install `docker-compose.woodpecker.yaml` as a second custom app, setting
+   `WOODPECKER_HOST`, the OAuth client and secret, `WOODPECKER_ADMIN` (your
+   GitHub username) and `WOODPECKER_AGENT_SECRET`.
+4. Proxy it through nginx-proxy-manager the same way as the update server.
+5. In the Woodpecker UI, enable the `ssm9/firefox` repository, mark it
+   **trusted** (the pipeline mounts host paths), and add a cron trigger every
+   6 hours.
+
+**Stop the `firefox-fork-builder` container first.** Both drive the same object
+directories, and running them together corrupts builds.
+
+The pipeline is `.woodpecker/firefox-fork.yaml`:
+
+```
+detect → rebase → build-linux64 → build-win64 → publish
+```
+
+`skip_clone` is set, because the 6 GB checkout on `/src` is managed by the build
+server rather than cloned per run. The two build steps are `failure: ignore` so
+one target failing still lets `publish` ship the other — the same behaviour the
+loop has. State that the loop kept in shell variables is passed between steps
+through `/state/ci`.
+
+A poll that finds nothing new records a skip flag, and the later steps return
+immediately, so a quiet cycle appears as a short green run rather than a
+failure.
+
 ## Day-to-day
 
 ```sh

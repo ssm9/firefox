@@ -1,0 +1,71 @@
+---
+# Woodpecker CI for the fork build server, on TrueNAS SCALE 24.10+.
+#
+# Replaces the polling loop with a pipeline that has per-step logs, timing,
+# history and retries. The build itself is unchanged: every step runs
+# build-loop.sh inside the same builder image, against the same volumes.
+#
+# GitHub is used as the forge, so the repository stays where it is and there is
+# no second forge to run. Create an OAuth app at
+# Settings > Developer settings > OAuth Apps with the callback URL
+# https://<woodpecker-host>/authorize.
+#
+# Install alongside docker-compose.yaml, not instead of it -- keep the builder
+# container stopped while Woodpecker drives builds, or both will compete for
+# the same object directories.
+
+services:
+  woodpecker-server:
+    image: woodpeckerci/woodpecker-server:latest
+    container_name: woodpecker-server
+    restart: unless-stopped
+    ports:
+      - "${WOODPECKER_PORT:-8000}:8000"
+    environment:
+      WOODPECKER_HOST: ${WOODPECKER_HOST:?e.g. https://ci.sai.town}
+      WOODPECKER_GITHUB: "true"
+      WOODPECKER_GITHUB_CLIENT: ${WOODPECKER_GITHUB_CLIENT:?OAuth app client id}
+      WOODPECKER_GITHUB_SECRET: ${WOODPECKER_GITHUB_SECRET:?OAuth secret}
+
+      # Only this account may log in or register repositories.
+      WOODPECKER_ADMIN: ${WOODPECKER_ADMIN:?your GitHub username}
+      WOODPECKER_OPEN: "false"
+
+      # Shared with the agent below; generate with: openssl rand -hex 32
+      WOODPECKER_AGENT_SECRET: ${WOODPECKER_AGENT_SECRET:?shared secret}
+
+      # The pipeline mounts host paths and needs the builder image, so the
+      # repository has to be trusted. Safe here because it is your own fork and
+      # nobody else can register repositories.
+      WOODPECKER_PLUGINS_PRIVILEGED: firefox-fork-builder
+    volumes:
+      - /mnt/tank/firefox-fork/woodpecker:/var/lib/woodpecker
+
+  woodpecker-agent:
+    image: woodpeckerci/woodpecker-agent:latest
+    container_name: woodpecker-agent
+    restart: unless-stopped
+    depends_on:
+      - woodpecker-server
+    environment:
+      WOODPECKER_SERVER: woodpecker-server:9000
+      WOODPECKER_AGENT_SECRET: ${WOODPECKER_AGENT_SECRET:?shared secret}
+      WOODPECKER_MAX_WORKFLOWS: "1"
+
+      # The build needs the persistent state: the checkout, object
+      # directories, sccache, signing key, MSVC toolchain and the published
+      # tree. Without these every pipeline would start from nothing.
+      WOODPECKER_BACKEND_DOCKER_VOLUMES: >-
+        /mnt/tank/firefox-fork/src:/src,
+        /mnt/tank/firefox-fork/state:/state,
+        /mnt/tank/firefox-fork/obj:/obj,
+        /mnt/tank/firefox-fork/www:/www,
+        /mnt/tank/firefox-fork/vs:/vs
+
+      FORK_UPDATE_HOST: ${FORK_UPDATE_HOST:-firefox-builds.sai.town}
+      FORK_UPDATE_SCHEME: ${FORK_UPDATE_SCHEME:-https}
+      FORK_TARGETS: ${FORK_TARGETS:-linux64 win64}
+      BUILD_JOBS: ${BUILD_JOBS:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /mnt/tank/firefox-fork/woodpecker-agent:/etc/woodpecker

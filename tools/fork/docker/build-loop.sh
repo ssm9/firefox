@@ -602,6 +602,166 @@ refs/tags/$tag \$(cat $STATE/fork-base) $FORK_BRANCH"
 
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Step mode
+#
+# A CI system runs each phase as its own process, so the state run_once keeps in
+# shell variables -- the version being built, the tag, the object directory --
+# has to survive between them. $STATE/ci holds it.
+#
+# The phases themselves are the same functions the loop calls, so both entry
+# points exercise identical code rather than drifting apart.
+# ---------------------------------------------------------------------------
+
+CI_DIR="$STATE/ci"
+
+ci_set() { mkdir -p "$CI_DIR"; printf '%s' "$2" > "$CI_DIR/$1"; }
+ci_get() { [ -f "$CI_DIR/$1" ] && cat "$CI_DIR/$1" || echo ""; }
+
+step_detect() {
+  local last_built=""
+  [ -f "$STATE/last-built" ] && last_built="$(tr -d '[:space:]' < "$STATE/last-built")"
+
+  local check
+  check="$(python3 "$SRC/tools/fork/check_release.py" \
+    --remote "$UPSTREAM" --last-built "$last_built" 2>&1)" || {
+    log "release check failed: $check"
+    return 1
+  }
+
+  local version tag should
+  version="$(sed -n 's/^version=//p' <<<"$check")"
+  tag="$(sed -n 's/^tag=//p' <<<"$check")"
+  should="$(sed -n 's/^should_build=//p' <<<"$check")"
+
+  rm -rf "$CI_DIR"
+  ci_set version "$version"
+  ci_set tag "$tag"
+
+  if [ "$should" != "true" ]; then
+    ci_set skip 1
+    log "Up to date at $version; later steps will no-op"
+    write_status "idle" "up to date" "$version"
+    return 0
+  fi
+
+  log "Firefox $version needs building (tag $tag)"
+  write_status "building" "detected $version" "$version"
+  return 0
+}
+
+# Every later step calls this first. Woodpecker has no equivalent of halting a
+# pipeline mid-run, so the steps run and return immediately instead. That keeps
+# a no-op poll visible as a short green run rather than a failure.
+step_should_skip() {
+  if [ -n "$(ci_get skip)" ]; then
+    log "Nothing to build; skipping"
+    return 0
+  fi
+  return 1
+}
+
+step_rebase() {
+  step_should_skip && return 0
+  local tag; tag="$(ci_get tag)"
+  [ -n "$tag" ] || { log "no tag recorded; run detect first"; return 1; }
+
+  if ! rebase_onto "$tag"; then
+    notify "Rebase conflict on $tag: the onDeterminingFilename patches do not apply."
+    write_status "conflict" "patch series does not apply to $tag" "$(ci_get version)"
+    return 1
+  fi
+
+  check_url_consistency
+  install_mar_cert
+  ensure_bootstrap
+  return 0
+}
+
+step_build() {
+  step_should_skip && return 0
+  local target="${1:?usage: step build <target>}"
+  local version; version="$(ci_get version)"
+
+  write_status "building" "compiling $target" "$version"
+  build_target "$target" || return 1
+
+  # FORK_OBJDIR is discovered by build_target; hand it to the next step.
+  ci_set "objdir-$target" "$FORK_OBJDIR"
+  return 0
+}
+
+step_mar() {
+  step_should_skip && return 0
+  local target="${1:?usage: step mar <target>}"
+  local objdir; objdir="$(ci_get "objdir-$target")"
+  [ -n "$objdir" ] || { log "no object directory for $target; run build first"; return 1; }
+
+  mkdir -p /tmp/fork-artifacts
+  "$SRC/tools/fork/make_mar.sh" "$target" "$objdir" /tmp/fork-artifacts || return 1
+
+  case "$target" in
+    linux64) cp -f "$objdir"/dist/*.tar.xz /tmp/fork-artifacts/ 2>/dev/null || true ;;
+    win64)   cp -f "$objdir"/dist/*.zip /tmp/fork-artifacts/ 2>/dev/null || true ;;
+  esac
+
+  ci_set "mar-$target" ok
+  return 0
+}
+
+step_publish() {
+  step_should_skip && return 0
+  local version; version="$(ci_get version)"
+
+  local metadata=() built="" failed="" target
+  for target in $FORK_TARGETS; do
+    if [ -n "$(ci_get "mar-$target")" ]; then
+      metadata+=("/tmp/fork-artifacts/$target.mar.json")
+      built="$built $target"
+    else
+      failed="$failed $target"
+    fi
+  done
+
+  if [ "${#metadata[@]}" -eq 0 ]; then
+    notify "No target built successfully for $version. Nothing published."
+    write_status "failed" "all targets failed:$failed" "$version"
+    return 1
+  fi
+
+  publish "$version" "${metadata[@]}" || {
+    notify "Publishing failed for $version."
+    write_status "failed" "publish failed" "$version"
+    return 1
+  }
+
+  if [ -n "$failed" ]; then
+    # last-built stays unrecorded so the next run retries the failing targets
+    # rather than treating the release as done.
+    notify "Published $version for:$built -- still failing:$failed"
+    write_status "partial" "published:$built failing:$failed" "$version"
+    return 1
+  fi
+
+  echo "$version" > "$STATE/last-built"
+  notify "Published Firefox $version for:$built"
+  write_status "ok" "published" "$version"
+  return 0
+}
+
+run_step() {
+  local cmd="${1:?usage: build-loop.sh step <detect|rebase|build|mar|publish> [target]}"
+  shift
+  case "$cmd" in
+    detect)  step_detect "$@" ;;
+    rebase)  step_rebase "$@" ;;
+    build)   step_build "$@" ;;
+    mar)     step_mar "$@" ;;
+    publish) step_publish "$@" ;;
+    *) log "unknown step: $cmd"; return 1 ;;
+  esac
+}
+
 main() {
   [ -d "$STATE" ] || die "/state is not mounted"
   [ -d "$WWW" ] || die "/www is not mounted"
@@ -625,6 +785,13 @@ main() {
   . "$SRC/tools/fork/config.sh" || die "could not source tools/fork/config.sh"
 
   preflight
+
+  # Step mode: a CI system drives the phases and this exits after one.
+  if [ "${1:-}" = "step" ]; then
+    shift
+    run_step "$@"
+    exit $?
+  fi
 
   log "Fork build server starting"
   log "  update host:   $FORK_UPDATE_HOST"

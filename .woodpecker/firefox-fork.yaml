@@ -1,0 +1,53 @@
+---
+# Firefox fork build pipeline, run by Woodpecker on the NAS.
+#
+# Each step is the same function the standalone loop calls, invoked through
+# `build-loop.sh step <phase>`, so the two entry points cannot drift apart.
+# State that the loop kept in shell variables -- version, tag, object
+# directories -- is passed between steps through /state/ci.
+#
+# Trigger this from a Woodpecker cron (every 6h). The detect step records
+# whether there is anything to do; the rest no-op if not, so a quiet poll shows
+# up as a short green run rather than a failure.
+
+# The source tree is a persistent 6+ GB checkout on /src that the build server
+# manages itself. Cloning it per pipeline would be absurd.
+skip_clone: true
+
+steps:
+  - name: detect
+    image: firefox-fork-builder:latest
+    commands:
+      - /usr/local/bin/build-loop.sh step detect
+
+  - name: rebase
+    image: firefox-fork-builder:latest
+    commands:
+      - /usr/local/bin/build-loop.sh step rebase
+    depends_on: [detect]
+
+  # Targets are built sequentially rather than in parallel: they would share
+  # the machine's cores and sccache, and serialising keeps each build as fast
+  # as it can be. A failure here does not stop the other target -- publish
+  # ships whatever produced a MAR.
+  - name: build-linux64
+    image: firefox-fork-builder:latest
+    commands:
+      - /usr/local/bin/build-loop.sh step build linux64
+      - /usr/local/bin/build-loop.sh step mar linux64
+    depends_on: [rebase]
+    failure: ignore
+
+  - name: build-win64
+    image: firefox-fork-builder:latest
+    commands:
+      - /usr/local/bin/build-loop.sh step build win64
+      - /usr/local/bin/build-loop.sh step mar win64
+    depends_on: [build-linux64]
+    failure: ignore
+
+  - name: publish
+    image: firefox-fork-builder:latest
+    commands:
+      - /usr/local/bin/build-loop.sh step publish
+    depends_on: [build-win64]
