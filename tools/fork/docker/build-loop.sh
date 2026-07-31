@@ -299,6 +299,20 @@ build_target() {
     export WINSYSROOT=/vs
   fi
 
+  # build/variables.py:95 only derives the source stamp from Mercurial or a
+  # sourcestamp.txt. This tree is git with neither, so source-repo.h comes out
+  # empty, and packaging then fails preprocessing it with "no preprocessor
+  # directives found" -- after the whole compile has succeeded. Supply the
+  # values through the environment, which toolkit/moz.configure:74 exists for.
+  #
+  # MOZ_SOURCE_CHANGESET has to be set explicitly: with MOZ_SOURCE_REPO set and
+  # it absent, variables.py falls back to querying Mercurial and raises.
+  # MOZ_INCLUDE_SOURCE_INFO is what makes MOZ_SOURCE_URL get written at all,
+  # and packaging reads exactly that key.
+  export MOZ_SOURCE_REPO="$FORK_REPO"
+  export MOZ_SOURCE_CHANGESET="$(git rev-parse HEAD)"
+  export MOZ_INCLUDE_SOURCE_INFO=1
+
   log "Building $target"
   ./mach build || return 1
   ./mach package || return 1
