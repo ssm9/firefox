@@ -286,6 +286,35 @@ rm /mnt/tank/firefox-fork/state/last-built
 sudo docker restart firefox-fork-builder
 ```
 
+### Watching a build
+
+Firefox is roughly 35k compilation units, so sccache's request count is the
+best progress signal. Call it by full path: the build uses the sccache that
+`mach bootstrap` installed, while a bare `sccache` on PATH is the one from the
+image. They are different versions, and the mismatched client cannot talk to
+the running server -- it fails with "Mismatch of client/server versions?".
+
+```sh
+sudo docker exec firefox-fork-builder \
+  /state/mozbuild/sccache/sccache --show-stats
+```
+
+Hit rate is near zero on a first build and high afterwards, which is what makes
+later releases and clobbers cheap.
+
+A backend-independent alternative, if sccache is unavailable:
+
+```sh
+sudo find /mnt/tank/firefox-fork/src/firefox/obj-x86_64-pc-linux-gnu \
+  -name '*.o' | wc -l
+```
+
+The object directory lives under `src/` rather than the `obj/` dataset, because
+mozbuild ignores the MOZ_OBJDIR environment variable when a mozconfig is in use
+(python/mozbuild/mozbuild/mozconfig.py:121). The loop asks mach where it built
+rather than assuming, so this is cosmetic -- but `obj/` sits unused, and `src/`
+grows by tens of gigabytes.
+
 ## Updating the pipeline scripts
 
 Everything except `build-loop.sh` is read from `/src` at run time, so updating
