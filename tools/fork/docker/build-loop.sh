@@ -41,6 +41,10 @@ export PATH="$CARGO_HOME/bin:$PATH"
 # in its own container, so anything left in /tmp is invisible to the next step.
 ARTIFACTS="${FORK_ARTIFACTS:-$STATE/artifacts}"
 
+# Whether this invocation should fetch. main() narrows it per phase; the
+# default keeps the ensure_* functions safe under `set -u` for any caller.
+FORK_REFRESH="${FORK_REFRESH:-1}"
+
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 
 # Pause before exiting. The container restarts automatically, and every fatal
@@ -185,15 +189,23 @@ ensure_tools() {
       || die "sparse-checkout failed"
   fi
 
-  git config --global --add safe.directory "$TOOLS"
+  # --add would append a duplicate on every invocation, and concurrent steps
+  # writing the same config file is a needless risk.
+  git config --global --get-all safe.directory 2>/dev/null | grep -qx "$TOOLS" \
+    || git config --global --add safe.directory "$TOOLS"
+
+  [ -f "$FORK/config.sh" ] || die "tooling checkout has no tools/fork/config.sh"
+
+  if [ "$FORK_REFRESH" != "1" ]; then
+    return 0
+  fi
+
   # --depth=1 again: the clone is shallow, and a full fetch would pull in the
   # history it was created to avoid.
   git -C "$TOOLS" fetch --depth=1 origin "$FORK_BRANCH" \
     || die "tooling fetch failed"
   git -C "$TOOLS" checkout -f -B fork-tools FETCH_HEAD \
     || die "could not check out tooling"
-
-  [ -f "$FORK/config.sh" ] || die "tooling checkout has no tools/fork/config.sh"
 }
 
 ensure_source() {
@@ -207,10 +219,15 @@ ensure_source() {
   cd "$SRC" || die "cannot enter $SRC"
   git config user.name "fork build server"
   git config user.email "noreply@localhost"
-  git config --global --add safe.directory "$SRC"
+  git config --global --get-all safe.directory 2>/dev/null | grep -qx "$SRC" \
+    || git config --global --add safe.directory "$SRC"
 
   git remote get-url upstream >/dev/null 2>&1 || \
     git remote add upstream "$UPSTREAM"
+
+  if [ "$FORK_REFRESH" != "1" ]; then
+    return 0
+  fi
 
   git fetch origin --prune || die "fetch origin failed"
 }
@@ -846,6 +863,20 @@ main() {
   [ -d "$STATE" ] || die "/state is not mounted"
   [ -d "$WWW" ] || die "/www is not mounted"
   mkdir -p "$MOZBUILD_STATE_PATH" "$SCCACHE_DIR" /obj /src
+
+  # Only the phases that need fresh git state fetch. Under CI the build, mar,
+  # publish and finalize steps run as separate processes -- two of them
+  # concurrently -- against the same repositories, and simultaneous fetches
+  # collide on .git/shallow.lock. They have no use for a fetch anyway: the tree
+  # they build was fixed by the patch step.
+  FORK_REFRESH=1
+  if [ "${1:-}" = "step" ]; then
+    case "${2:-}" in
+      detect|patch) FORK_REFRESH=1 ;;
+      *)            FORK_REFRESH=0 ;;
+    esac
+  fi
+  export FORK_REFRESH
 
   # config.sh lives in the tree, so the clone has to come first. Values already
   # set in the environment by the compose file win over its defaults.
