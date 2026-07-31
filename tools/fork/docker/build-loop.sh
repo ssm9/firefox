@@ -218,6 +218,22 @@ ensure_bootstrap() {
   touch "$STATE/.bootstrapped"
 }
 
+# The win64 build runs midl.exe under wine to compile the accessibility IDL.
+# wine needs a 32-bit runtime even to launch 64-bit executables; without it
+# every midl invocation fails with "/lib/ld-linux.so.2: could not open".
+# Mozilla's own build image installs the same packages for the same reason
+# (taskcluster/docker/debian-build/Dockerfile:11).
+ensure_wine_runtime() {
+  if [ -e /lib/ld-linux.so.2 ]; then
+    return 0
+  fi
+
+  log "Installing the 32-bit runtime wine needs"
+  apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+    libc6-i386 lib32gcc-s1 lib32stdc++6 lib32z1 \
+    || { log "ERROR: could not install the 32-bit runtime"; return 1; }
+}
+
 # mach bootstrap installs only the host Rust target. Cross-compiling needs the
 # target's standard library too, or configure fails its trial compile with
 # "can't find crate for `std`".
@@ -376,6 +392,7 @@ build_target() {
   if [ "$target" = "win64" ]; then
     ensure_vs || return 1
     ensure_rust_target x86_64-pc-windows-msvc || return 1
+    ensure_wine_runtime || return 1
     # WINSYSROOT, not VSPATH: configure reads WINSYSROOT
     # (build/moz.configure/windows-toolchain.configure:62) and expects a
     # directory containing VC, "Windows Kits/10" and DIA SDK, which is what
