@@ -487,10 +487,14 @@ build_target() {
 
   # Remember the first signmar that actually runs here. signmar is a Program,
   # not a HostProgram (modules/libmar/tool/moz.build), so a cross-compiled
-  # target builds one for that target -- win64 produces a Windows executable.
-  # Signing does not care about architecture, so the native build's copy is
-  # reused for every subsequent target.
-  if [ -z "${FORK_SIGNMAR:-}" ]; then
+  # target builds one for that target -- win64 produces a Windows executable
+  # that cannot run on the builder. Signing does not care about architecture,
+  # so the native build's copy is reused for every subsequent target.
+  #
+  # Recorded on disk, not just exported. Under CI each phase is its own
+  # container, so an exported variable never reaches the step that needs it:
+  # win64's packaging would fall back to its own objdir and find a .exe.
+  if [ -z "$(ci_get signmar)" ]; then
     local candidate="$FORK_OBJDIR/dist/bin/signmar"
     if [ -x "$candidate" ]; then
       # `|| rc=$?` rather than a bare call: signmar exits non-zero for a usage
@@ -498,8 +502,9 @@ build_target() {
       local rc=0
       "$candidate" -h >/dev/null 2>&1 || rc=$?
       if [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ]; then
+        ci_set signmar "$candidate"
         export FORK_SIGNMAR="$candidate"
-        log "Using signmar from $target: $FORK_SIGNMAR"
+        log "Using signmar from $target: $candidate"
       fi
     fi
   fi
@@ -775,6 +780,15 @@ step_mar() {
   local target="${1:?usage: step mar <target>}"
   local objdir; objdir="$(ci_get "objdir-$target")"
   [ -n "$objdir" ] || { log "no object directory for $target; run build first"; return 1; }
+
+  # Recorded by whichever build produced a signmar that runs on this host. A
+  # cross-compiled target's own copy is built for the target -- win64's is a
+  # Windows executable -- so it cannot sign anything here.
+  local signmar; signmar="$(ci_get signmar)"
+  if [ -n "$signmar" ]; then
+    export FORK_SIGNMAR="$signmar"
+    log "Signing with $signmar"
+  fi
 
   mkdir -p "$ARTIFACTS"
   FORK_SRCDIR="$SRC" "$FORK/make_mar.sh" "$target" "$objdir" "$ARTIFACTS" || return 1
