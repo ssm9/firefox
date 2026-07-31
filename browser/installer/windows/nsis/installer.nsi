@@ -157,11 +157,17 @@ VIAddVersionKey "OriginalFilename" "setup.exe"
 
 Name "${BrandFullName}"
 OutFile "setup.exe"
-!ifdef HAVE_64BIT_BUILD
-  InstallDir "$PROGRAMFILES64\${BrandFullName}\"
-!else
-  InstallDir "$PROGRAMFILES32\${BrandFullName}\"
-!endif
+# FORK: default to a per-user location rather than Program Files.
+#
+# These builds disable the maintenance service, because it verifies the
+# binary's Authenticode signature before applying an update
+# (toolkit/mozapps/update/common/registrycertificates.cpp:39) and fork builds
+# are not signed. Updates therefore run unelevated as the invoking user, and
+# cannot write to Program Files -- an install there downloads every update and
+# silently fails to apply it.
+#
+# /InstallDirectoryPath= still overrides this at install time.
+InstallDir "$LOCALAPPDATA\${BrandFullName}\"
 ShowInstDetails nevershow
 
 ################################################################################
