@@ -138,10 +138,25 @@ rm -f "$UNSIGNED"
 # check an installed build performs.
 echo "Verifying signature against the committed certificate"
 
-CERT_DER="$TOPSRCDIR/toolkit/mozapps/update/updater/release_primary.der"
+# Verify against the copy on the state volume, not the one in the source tree.
+# install_mar_cert copies the former over the latter before every build, so the
+# state volume is the authoritative source of what gets compiled in, while the
+# tree copy is transient -- any `git checkout -f` reverts it to upstream's, and
+# the loop does exactly that at the start of each cycle.
+CERT_DER="$FORK_NSS_DIR/release_primary.der"
 if [ ! -s "$CERT_DER" ]; then
   echo "ERROR: $CERT_DER is missing or empty." >&2
   exit 1
+fi
+
+# If the tree disagrees, the build may have been made with a different
+# certificate. Not fatal on its own: it also happens whenever the tree is
+# re-checked-out after a build, which is routine.
+TREE_DER="$TOPSRCDIR/toolkit/mozapps/update/updater/release_primary.der"
+if [ -s "$TREE_DER" ] && ! cmp -s "$CERT_DER" "$TREE_DER"; then
+  echo "WARNING: $TREE_DER differs from $CERT_DER." >&2
+  echo "If this build was produced without install_mar_cert running first," >&2
+  echo "it trusts a different certificate and will reject these updates." >&2
 fi
 
 VERIFY_DB="$(mktemp -d)"
