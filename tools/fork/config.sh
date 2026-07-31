@@ -3,7 +3,7 @@
 # Sourced by the other scripts in this directory.
 
 # Update channel and MAR channel ID. Must match the values in
-# browser/config/mozconfigs/*/fork.
+# tools/fork/mozconfigs/*.
 export FORK_CHANNEL=ssm9
 export FORK_MAR_CHANNEL_ID=ssm9
 

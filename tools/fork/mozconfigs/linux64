@@ -1,10 +1,21 @@
 # Fork build configuration for linux64.
 #
-# Deliberately does not source browser/config/mozconfigs/linux64/common-opt:
-# that file requires Mozilla-internal API keyfiles under /builds which a fork
-# can neither obtain nor legitimately use.
+# Deliberately self-contained. It must not source anything under
+# $topsrcdir/build: build/unix/mozconfig.linux chains through
+# build/unix/mozconfig.unix to build/mozconfig.common, which sources
+# build/mozconfig.automation and exports MOZ_AUTOMATION_MOZCONFIG=1. configure
+# rejects that outside Mozilla automation with "Please don't use them"
+# (build/moz.configure/init.configure:205).
+#
+# Those fragments also assume Taskcluster-only variables -- MOZ_FETCHES_DIR,
+# UPLOAD_PATH -- and enable the clang static-analysis plugin, none of which
+# apply here.
 
-. "$topsrcdir/build/unix/mozconfig.linux"
+ac_add_options --enable-application=browser
+
+# Use the toolchains mach bootstrap put in MOZBUILD_STATE_PATH, and fetch any
+# that are missing rather than failing configure.
+ac_add_options --enable-bootstrap
 
 ac_add_options --enable-optimize
 ac_add_options --disable-debug
@@ -35,5 +46,3 @@ if command -v sccache > /dev/null 2>&1; then
 fi
 
 export MOZILLA_OFFICIAL=1
-
-. "$topsrcdir/build/mozconfig.common.override"

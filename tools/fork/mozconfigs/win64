@@ -1,12 +1,20 @@
 # Fork build configuration for win64, cross-compiled from Linux.
 #
-# Requires a packaged MSVC/SDK toolchain on the build host; see
-# tools/fork/README.md. Deliberately does not source
-# browser/config/mozconfigs/win64/common-opt (Mozilla-internal API keyfiles)
-# or common-win64 (enables the clang static-analysis plugin, which a fork
-# does not need and which costs build time).
+# Deliberately self-contained, for the same reason as the linux64 mozconfig:
+# the in-tree fragments chain to build/mozconfig.automation, which configure
+# rejects outside Mozilla automation
+# (build/moz.configure/init.configure:205).
+#
+# The MSVC toolchain is located through the WINSYSROOT environment variable,
+# set by tools/fork/docker/build-loop.sh to the directory get_vs.py populates.
+# WINSYSROOT expects a directory containing VC, "Windows Kits/10" and DIA SDK,
+# which is exactly get_vs.py's output layout. Setting it also suppresses the
+# attempt to bootstrap a "vs" toolchain, which is not publicly downloadable.
 
+ac_add_options --enable-application=browser
 ac_add_options --target=x86_64-pc-windows-msvc
+
+ac_add_options --enable-bootstrap
 
 ac_add_options --enable-optimize
 ac_add_options --disable-debug
@@ -26,7 +34,7 @@ export ACCEPTED_MAR_CHANNEL_IDS=ssm9
 # an Authenticode check against certificates recorded in the registry
 # (toolkit/mozapps/update/common/registrycertificates.cpp:39). Fork builds are
 # not Authenticode-signed, so that check can never pass. Disable the service
-# and let updates run unelevated as the invoking user instead — which means
+# and let updates run unelevated as the invoking user instead -- which means
 # Firefox must be installed somewhere user-writable, NOT Program Files.
 ac_add_options --disable-maintenance-service
 
@@ -43,5 +51,3 @@ if command -v sccache > /dev/null 2>&1; then
 fi
 
 export MOZILLA_OFFICIAL=1
-
-. "$topsrcdir/build/mozconfig.common.override"
