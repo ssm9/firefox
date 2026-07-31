@@ -247,12 +247,22 @@ When it succeeds, start the app again for the normal polling loop.
 
 ## 10. Verify before trusting it
 
-Patch present in the build — this file does not exist in stock Firefox:
+Confirm the patch actually reached the build:
 
 ```sh
-unzip -l /mnt/tank/firefox-fork/obj/obj-fork-linux64/dist/firefox/omni.ja \
-  chrome/toolkit/content/extensions/child/ext-downloads.js
+sudo docker exec firefox-fork-builder \
+  /src/firefox/tools/fork/verify_patch.sh \
+  /src/firefox/obj-x86_64-pc-linux-gnu
 ```
+
+This extracts all eight patched files from `omni.ja` and compares them
+byte-for-byte against the source they were built from — catching a stale
+`omni.ja` or a `jar.mn` entry that silently failed to package a file, which
+grepping for a marker would not. It also checks two things independent of the
+source tree: that `child/ext-downloads.js` exists at all (it does not in stock
+Firefox) and that the schema declares `onDeterminingFilename`.
+
+Exit status is non-zero on any failure, so it can gate a release.
 
 MAR signature against the certificate compiled into the updater:
 
