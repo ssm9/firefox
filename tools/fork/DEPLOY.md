@@ -267,10 +267,19 @@ Exit status is non-zero on any failure, so it can gate a release.
 MAR signature against the certificate compiled into the updater:
 
 ```sh
-sudo docker exec -it firefox-fork-builder \
-  /obj/obj-fork-linux64/dist/host/bin/signmar \
-  -D /src/firefox/toolkit/mozapps/update/updater/release_primary.der \
-  -v /www/downloads/<version>/firefox-<version>.linux64.complete.mar
+# signmar's -D DERFilePath form is compiled out on Linux (MAR_NSS is always
+# defined there), so verification goes through a throwaway NSS database
+# holding the certificate that is compiled into the updater.
+sudo docker exec -it firefox-fork-builder bash -c '
+  OBJ=/src/firefox/obj-x86_64-pc-linux-gnu
+  DB=$(mktemp -d); PW=$(mktemp); printf "\n" > "$PW"
+  certutil -N -d "$DB" -f "$PW"
+  certutil -A -d "$DB" -f "$PW" -n forkverify -t ",," \
+    -i /src/firefox/toolkit/mozapps/update/updater/release_primary.der
+  $OBJ/dist/bin/signmar -d "$DB" -n forkverify -v \
+    /www/downloads/<version>/firefox-<version>.linux64.complete.mar
+  rm -rf "$DB" "$PW"
+'
 ```
 
 Manifest at the exact path a client asks for:

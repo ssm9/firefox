@@ -116,11 +116,36 @@ fi
 "$SIGNMAR_BIN" -d "$NSS_DB" -n "$FORK_MAR_CERT_NICKNAME" -s "$UNSIGNED" "$SIGNED"
 rm -f "$UNSIGNED"
 
-# Verify against the same DER that is compiled into the updater. If this fails,
-# shipping the MAR would produce builds that reject their own updates.
+# Verify against the same certificate that is compiled into the updater. If
+# this fails, shipping the MAR would produce builds that reject their own
+# updates.
+#
+# signmar's -D DERFilePath form does not exist here. It is compiled out
+# whenever MAR_NSS is defined, and MOZ_USE_NSS_FOR_MAR is unconditionally true
+# on Linux -- --enable-nss-mar can only be toggled on Windows and macOS
+# (build/moz.configure/update-programs.configure:131). Verification therefore
+# has to go through an NSS database.
+#
+# The certificate is imported into a throwaway database rather than verifying
+# against the signing database directly: the point of this check is that the
+# MAR validates against the exact bytes that get compiled into the updater, and
+# verifying against the key that just signed it would prove nothing.
 echo "Verifying signature against the committed certificate"
-"$SIGNMAR_BIN" -D "$TOPSRCDIR/toolkit/mozapps/update/updater/release_primary.der" \
-  -v "$SIGNED"
+
+CERT_DER="$TOPSRCDIR/toolkit/mozapps/update/updater/release_primary.der"
+if [ ! -s "$CERT_DER" ]; then
+  echo "ERROR: $CERT_DER is missing or empty." >&2
+  exit 1
+fi
+
+VERIFY_DB="$(mktemp -d)"
+VERIFY_PW="$(mktemp)"
+trap 'rm -rf "$VERIFY_DB" "$VERIFY_PW"' EXIT
+printf '\n' > "$VERIFY_PW"
+
+certutil -N -d "$VERIFY_DB" -f "$VERIFY_PW"
+certutil -A -d "$VERIFY_DB" -f "$VERIFY_PW" -n forkverify -t ",," -i "$CERT_DER"
+"$SIGNMAR_BIN" -d "$VERIFY_DB" -n forkverify -v "$SIGNED"
 
 SIZE="$(wc -c < "$SIGNED" | tr -d ' ')"
 HASH="$(openssl dgst -sha512 "$SIGNED" | awk '{print $NF}')"
