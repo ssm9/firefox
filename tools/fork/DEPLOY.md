@@ -332,18 +332,35 @@ directories, and running them together corrupts builds.
 The pipeline is `.woodpecker/firefox-fork.yaml`:
 
 ```
-detect → rebase → build-linux64 → build-win64 → publish
+detect → patch ─┬→ build-linux64 → publish-linux64 ─┬→ finalize
+                └→ build-win64   → publish-win64   ─┘
 ```
 
-`skip_clone` is set, because the 6 GB checkout on `/src` is managed by the build
-server rather than cloned per run. The two build steps are `failure: ignore` so
-one target failing still lets `publish` ship the other — the same behaviour the
-loop has. State that the loop kept in shell variables is passed between steps
-through `/state/ci`.
+The two targets build concurrently and each publishes as soon as it is ready,
+so a slow or failing win64 no longer holds up a finished linux64. Both build
+steps are `failure: ignore`; `finalize` owns `last-built` and is the step whose
+colour reflects the run.
+
+**Set `BUILD_JOBS` to about half the core count** when both targets build at
+once. Unset, each build sizes itself for the whole machine, and two together
+oversubscribe the CPU and can coincide at peak memory — two `libxul` links at
+once is the likeliest way to exhaust RAM. To go back to sequential builds,
+change `build-win64`'s `depends_on` to `[build-linux64]`.
+
+`skip_clone` is set: both checkouts under `/src` are managed by the build
+server, and the Firefox tree alone is over 6 GB.
+
+Two kinds of state cross step boundaries, and neither can live in `/tmp`,
+because every step is its own container:
+
+| | |
+| --- | --- |
+| `/state/ci` | version and tag being built, and each target's objdir |
+| `/state/artifacts` | the built MARs and installers |
 
 A poll that finds nothing new records a skip flag, and the later steps return
 immediately, so a quiet cycle appears as a short green run rather than a
-failure.
+failure — Woodpecker has no equivalent of halting a pipeline mid-run.
 
 ## Day-to-day
 

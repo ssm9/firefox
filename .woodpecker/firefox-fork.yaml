@@ -3,16 +3,20 @@
 #
 # Each step invokes the same function the standalone loop calls, through
 # `build-loop.sh step <phase>`, so the two entry points cannot drift apart.
-# State the loop kept in shell variables -- version, tag, object directories --
-# passes between steps through /state/ci, and built MARs through
-# /state/artifacts. Neither can live in /tmp: every step is its own container.
+#
+# Two kinds of state cross step boundaries, and neither can live in /tmp,
+# because every step is its own container:
+#   /state/ci         the version and tag being built, and each target's objdir
+#   /state/artifacts  the built MARs and installers
 #
 # Trigger from a Woodpecker cron (every 6h). The detect step records whether
 # there is anything to do; later steps no-op if not, so a quiet poll is a short
 # green run rather than a failure.
 
-# The source tree is a persistent 6+ GB checkout on /src managed by the build
-# server. Cloning it per pipeline would be absurd.
+# Two checkouts live under /src and both are managed by the build server:
+# /src/firefox is a release-tag tree with the fork patch applied, and
+# /src/fork-tools is a sparse checkout of the tooling. Cloning either per
+# pipeline would be absurd -- the Firefox tree alone is over 6 GB.
 skip_clone: true
 
 steps:
@@ -21,14 +25,18 @@ steps:
     commands:
       - /usr/local/bin/build-loop.sh step detect
 
-  - name: rebase
+  # Checks out the release tag and applies the fork's changes as a single
+  # three-way patch. Failure here means upstream changed code the series
+  # touches; the conflict markers are left in /src/firefox for inspection and
+  # nothing is published.
+  - name: patch
     image: firefox-fork-builder:latest
     commands:
-      - /usr/local/bin/build-loop.sh step rebase
+      - /usr/local/bin/build-loop.sh step patch
     depends_on: [detect]
 
-  # The two targets run concurrently. They do not halve wall-clock time -- they
-  # share the same cores, so the gain is only from overlapping one build's
+  # The two targets run concurrently. This does not halve wall-clock time --
+  # they share the same cores, so the gain is only from overlapping one build's
   # serial stretches (gkrust, the libxul link) with the other's parallel work.
   #
   # Cap BUILD_JOBS at roughly half the core count in the agent environment.
@@ -40,7 +48,7 @@ steps:
     commands:
       - /usr/local/bin/build-loop.sh step build linux64
       - /usr/local/bin/build-loop.sh step mar linux64
-    depends_on: [rebase]
+    depends_on: [patch]
     failure: ignore
 
   - name: build-win64
@@ -48,7 +56,7 @@ steps:
     commands:
       - /usr/local/bin/build-loop.sh step build win64
       - /usr/local/bin/build-loop.sh step mar win64
-    depends_on: [rebase]
+    depends_on: [patch]
     failure: ignore
 
   # Each target publishes as soon as it is ready rather than waiting for the
