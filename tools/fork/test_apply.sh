@@ -63,9 +63,14 @@ setup_repo() {
   git config merge.renameLimit 20000
   git config diff.renameLimit 20000
 
-  mkdir -p toolkit/components/downloads tools/fork .woodpecker
+  mkdir -p toolkit/components/downloads tools/fork .woodpecker .github/workflows
   seq 1 40 > toolkit/components/downloads/DownloadIntegration.sys.mjs
   seq 1 40 > toolkit/components/extensions.js
+  # Upstream owns .github, and the fork leaves it alone. It has to exist in the
+  # base: an excluded path that is present upstream is what distinguishes
+  # neutralising it in the squashed tree from deleting it, and deleting it
+  # conflicts as soon as upstream edits the file.
+  printf 'name: pr-handler\njobs: {}\n' > .github/workflows/pr-handler.yml
   git add -A; git commit -qm base
   BASE="$(git rev-parse HEAD)"
   git update-ref refs/remotes/origin/main HEAD
@@ -105,6 +110,11 @@ setup_repo() {
       perl -pi -e 's/^5$/5 UPSTREAM EDIT/' \
         toolkit/components/downloads/DownloadIntegration.sys.mjs
       git commit -qam "upstream: unrelated edit"
+      ;;
+    excluded)
+      printf 'name: pr-handler\njobs: {build: {}}\n' \
+        > .github/workflows/pr-handler.yml
+      git commit -qam "upstream: edit a workflow the fork excludes"
       ;;
     *) echo "unknown mode: $mode" >&2; exit 1 ;;
   esac
@@ -179,7 +189,25 @@ else
     || bad "failed before reaching the merge: $out"
 fi
 
-echo "=== 6. ordinary unrelated upstream edit ==="
+echo "=== 6. upstream edits a path the fork excludes ==="
+# Regression: the excluded paths were stripped from the squashed tree, which
+# reads as the fork deleting them. Upstream editing one then produced
+# "CONFLICT (modify/delete): .github/workflows/pr-handler.yml deleted in
+# <commit> and modified in HEAD" on a file the series never touches.
+setup_repo excluded
+if apply_patch_onto RELEASE; then
+  ok "excluded path did not conflict"
+  [ -f .github/workflows/pr-handler.yml ] \
+    && ok "upstream's excluded file survived" || bad "excluded file deleted"
+  grep -q 'build: {}' .github/workflows/pr-handler.yml \
+    && ok "upstream's version of it is intact" || bad "wrong version in tree"
+  [ -e tools/fork/config.sh ] \
+    && bad "tooling still leaked" || ok "tooling still excluded"
+else
+  bad "excluded path caused a conflict"
+fi
+
+echo "=== 7. ordinary unrelated upstream edit ==="
 setup_repo clean
 if apply_patch_onto RELEASE; then
   grep -q '20 FORK EDIT' "$DL" && grep -q '5 UPSTREAM EDIT' "$DL" \

@@ -315,18 +315,26 @@ ensure_rust_target() {
 # Squash the fork branch into a single commit parented on the patch base.
 #
 # Built as a commit rather than a diff so the changes can be applied by the
-# merge machinery, which the tooling paths have to be stripped out of first:
-# they live in their own checkout, and landing them in $SRC would rewrite this
-# script while it is running.
+# merge machinery, which needs the excluded paths neutralised in the tree
+# first. Neutralised, not removed: the commit is diffed against the base, so a
+# path simply deleted from the tree reads as "the fork deletes this file".
+# Upstream has .github/workflows, which the fork does not touch, and expressing
+# that as a deletion conflicts the moment upstream edits one of those files --
+# "deleted in <commit> and modified in HEAD". Restoring the base's own version
+# of each excluded path makes the diff empty there instead, which is what the
+# `git diff ':!path'` pathspec used to achieve.
 #
-# The stripping happens in a scratch index, so nothing here touches the real
-# index or the working tree -- this runs before the checkout, while the tree is
-# still whatever the last cycle left behind.
+# All of it happens in a scratch index, so nothing here touches the real index
+# or the working tree -- this runs before the checkout, while the tree is still
+# whatever the last cycle left behind.
 #
 # Echoes the commit.
 build_fork_commit() {
   local base="$1"
   local index="$STATE/fork-index"
+
+  # Paths the build tree must never receive from the fork branch.
+  local excluded=(tools/fork .woodpecker .github)
 
   rm -f "$index"
 
@@ -334,7 +342,14 @@ build_fork_commit() {
   # --force because the scratch index deliberately disagrees with both HEAD and
   # the working tree, which is the safety check git rm would otherwise apply.
   GIT_INDEX_FILE="$index" git rm -rq --cached --force --ignore-unmatch \
-    -- tools/fork .woodpecker .github > /dev/null || return 1
+    -- "${excluded[@]}" > /dev/null || return 1
+
+  # ls-tree's output is already the format --index-info reads. Paths the base
+  # does not have -- tools/fork, .woodpecker -- match nothing and stay absent,
+  # which is correct: the base does not have them either, so the diff is still
+  # empty there.
+  git ls-tree -r "$base" -- "${excluded[@]}" \
+    | GIT_INDEX_FILE="$index" git update-index --index-info || return 1
 
   local tree
   tree="$(GIT_INDEX_FILE="$index" git write-tree)" || return 1
