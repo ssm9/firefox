@@ -260,15 +260,19 @@ if `win64` is in `FORK_TARGETS` it downloads the MSVC toolchain from Microsoft
 Apple's SDK from `swcdn.apple.com`. Then it compiles Firefox, which takes hours
 with a cold sccache.
 
-**If the patch does not apply**, upstream changed code the series touches. The
-conflict markers are left in `/src/firefox` for inspection, and nothing is
-published. Resolve it on `ssm9/fork-build` and push; the next cycle regenerates
-the patch from the branch. Reproduce it by hand with:
+**If the fork changes do not merge**, upstream changed code the series touches
+in a way the merge could not resolve. The conflict markers are left in
+`/src/firefox` for inspection, and nothing is published. Resolve it on
+`ssm9/fork-build` and push; the next cycle rebuilds the squashed commit from
+the branch. Reproduce it by hand with:
 
 ```sh
-sudo docker exec -it firefox-fork-builder \
-  git -C /src/firefox apply --3way /state/fork.patch
+sudo docker exec -it firefox-fork-builder bash -c \
+  'git -C /src/firefox cherry-pick $(cat /state/fork-commit)'
 ```
+
+A file the series edits having been *renamed* upstream is handled
+automatically and is not this failure — see README.md, "Patch base".
 
 Two checkouts live under `/src`:
 

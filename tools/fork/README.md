@@ -26,8 +26,8 @@ lets updates work at all.
 
 ```
 TrueNAS SCALE custom app
-├── builder    polls upstream every 6h; on a new release, rebases the patch
-│              series, builds, signs MARs, publishes into /www
+├── builder    polls upstream every 6h; on a new release, cherry-picks the
+│              patch series, builds, signs MARs, publishes into /www
 └── web        nginx serving /www (manifests + MARs), on host port 8088
 
 WireGuard client → nginx-proxy-manager → <nas-ip>:8088
@@ -238,14 +238,38 @@ Drop `macos-aarch64` from `FORK_TARGETS` to skip the download.
 Nothing to configure. The build server derives where the fork's own commits
 begin, as the merge base of the fork branch and `origin/main`.
 
-The fork's changes are applied to each release tag as a single squashed patch
-rather than by replaying the commit series. The history is worth keeping on the
-upstreamable branch, but the build only needs the resulting tree, and squashing
-gives one conflict surface instead of one per commit. It also keeps the checkout
-anchored to a release tag: moving between releases touches a few hundred files
-where resetting to the mozilla-central-based branch and rebasing forward touched
-over twelve thousand, which is the difference between an incremental rebuild and
-a near-total one.
+The fork's changes are applied to each release tag as a single squashed commit,
+cherry-picked onto the tag, rather than by replaying the commit series. The
+history is worth keeping on the upstreamable branch, but the build only needs
+the resulting tree, and squashing gives one conflict surface instead of one per
+commit. It also keeps the checkout anchored to a release tag: moving between
+releases touches a few hundred files where resetting to the
+mozilla-central-based branch and rebasing forward touched over twelve thousand,
+which is the difference between an incremental rebuild and a near-total one.
+
+**Cherry-pick, not `git apply`.** This used to apply a squashed *diff* with
+`git apply --3way`. That matches patches to files by path and has no rename
+detection, so an upstream move of a file the series touches failed with
+`<path>: does not exist in index` — even when the change itself still applied
+cleanly — and rolled the whole apply back, leaving a pristine tree and no
+conflict markers to work from. Going through the merge machinery instead
+follows the rename and applies the change at the file's new path. That matters
+because it is not hypothetical: the `.jsm` → `.sys.mjs` migration renamed three
+of the files this series edits.
+
+Rename detection is why `merge.renameLimit` and `diff.renameLimit` are set on
+the checkout. Past the limit git silently stops looking for renames and prints
+a warning, which would put the old behaviour back; a release-to-release diff of
+mozilla-central is large enough to hit the defaults.
+
+`test_apply.sh` covers this against synthetic upstream renames, deletions and
+conflicts. It needs only git — no container, no Firefox checkout, no network —
+and it extracts the functions from `build-loop.sh` rather than reimplementing
+them, so it cannot drift:
+
+```sh
+tools/fork/test_apply.sh
+```
 
 Override the base only for a series based somewhere the merge base cannot
 express:
@@ -270,9 +294,10 @@ Replace every `/mnt/tank/...` path with your real dataset paths.
 1. `check_release.py` finds the newest `FIREFOX_*_RELEASE` tag and compares it
    to `state/last-built`. Dot releases (`153.0.1`) count — those are the
    security updates, which is why the loop polls every 6h rather than monthly.
-2. The fork branch is rebased onto the new tag. **A conflict stops the cycle
-   and notifies.** Nothing is published. This is the guard against silently
-   shipping a mis-merged download path when upstream touches the same code.
+2. The fork branch is squashed into one commit and cherry-picked onto the new
+   tag. **A conflict stops the cycle and notifies.** Nothing is published. This
+   is the guard against silently shipping a mis-merged download path when
+   upstream touches the same code.
 3. Each target builds, and `make_mar.sh` produces a signed complete MAR,
    verifying it against the committed certificate before it can be published.
 4. MARs are copied into `/www/downloads/<version>/` **first**, and only then are
