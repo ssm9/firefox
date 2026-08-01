@@ -363,6 +363,11 @@ builders on the same object directories and two nginx containers on one port.
 5. In the Woodpecker UI, enable the `ssm9/firefox` repository, mark it
    **trusted** (the pipeline mounts host paths), and add a cron trigger every
    6 hours.
+6. **Raise the repository timeout** under repo settings, to 720 minutes. The
+   default is 60, which a cold build passes long before it finishes — the run
+   is killed and the step reports `context deadline exceeded`, which looks
+   like a network fault rather than a timeout. The compose file raises the
+   server-side maximum to match; a repository can never be set above it.
 
 **Set the branch to `ssm9/fork-build`**, on the cron and on manual runs. The
 repository's default branch is upstream's `main`, which contains no

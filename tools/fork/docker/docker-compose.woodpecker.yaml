@@ -53,6 +53,18 @@ services:
       # Shared with the agent below; generate with: openssl rand -hex 32
       WOODPECKER_AGENT_SECRET: ${WOODPECKER_AGENT_SECRET:?shared secret}
 
+      # Minutes. Woodpecker kills any pipeline that outlives the repository's
+      # timeout and reports it on the step as "context deadline exceeded",
+      # which reads like a network fault rather than what it is. The defaults
+      # are 60 for a repository and 120 for the maximum it may be set to --
+      # both far below a cold Firefox build, where gkrust alone is a
+      # single-threaded LTO codegen of half an hour or more.
+      #
+      # The repository value is set in the Woodpecker UI and cannot exceed the
+      # maximum here, so raising it there alone silently does nothing.
+      WOODPECKER_DEFAULT_PIPELINE_TIMEOUT: "720"
+      WOODPECKER_MAX_PIPELINE_TIMEOUT: "1440"
+
       # The pipeline mounts host paths and needs the builder image, so the
       # repository has to be trusted. Safe here because it is your own fork and
       # nobody else can register repositories.
