@@ -219,6 +219,16 @@ ensure_source() {
   cd "$SRC" || die "cannot enter $SRC"
   git config user.name "fork build server"
   git config user.email "noreply@localhost"
+
+  # Rename detection is the whole reason the fork changes are applied by
+  # cherry-pick, and git switches it off when a diff has more renames to
+  # consider than the limit allows -- printing a warning and silently
+  # degrading to the behaviour we are trying to avoid. A release-to-release
+  # diff of mozilla-central is large enough to hit the defaults. Exact renames
+  # are always detected regardless; this is what buys detection of a file that
+  # was moved *and* edited.
+  git config merge.renameLimit 20000
+  git config diff.renameLimit 20000
   git config --global --get-all safe.directory 2>/dev/null | grep -qx "$SRC" \
     || git config --global --add safe.directory "$SRC"
 
@@ -302,18 +312,59 @@ ensure_rust_target() {
 # Patching
 # ---------------------------------------------------------------------------
 
-# Apply the fork's changes onto a release tag as a single squashed patch,
+# Squash the fork branch into a single commit parented on the patch base.
+#
+# Built as a commit rather than a diff so the changes can be applied by the
+# merge machinery, which the tooling paths have to be stripped out of first:
+# they live in their own checkout, and landing them in $SRC would rewrite this
+# script while it is running.
+#
+# The stripping happens in a scratch index, so nothing here touches the real
+# index or the working tree -- this runs before the checkout, while the tree is
+# still whatever the last cycle left behind.
+#
+# Echoes the commit.
+build_fork_commit() {
+  local base="$1"
+  local index="$STATE/fork-index"
+
+  rm -f "$index"
+
+  GIT_INDEX_FILE="$index" git read-tree "origin/$FORK_BRANCH" || return 1
+  # --force because the scratch index deliberately disagrees with both HEAD and
+  # the working tree, which is the safety check git rm would otherwise apply.
+  GIT_INDEX_FILE="$index" git rm -rq --cached --force --ignore-unmatch \
+    -- tools/fork .woodpecker .github > /dev/null || return 1
+
+  local tree
+  tree="$(GIT_INDEX_FILE="$index" git write-tree)" || return 1
+  rm -f "$index"
+
+  git commit-tree "$tree" -p "$base" \
+    -m "fork: squashed fork changes for the build server" || return 1
+}
+
+# Apply the fork's changes onto a release tag as a single squashed commit,
 # rather than replaying the commit series.
 #
 # The commit history is worth keeping on the upstreamable branch, but the build
 # only needs the resulting tree. Squashing has two concrete advantages:
 #
-#  - One conflict surface. A rebase can stop 34 separate times; a three-way
-#    apply either lands or reports its conflicted hunks once.
+#  - One conflict surface. A rebase can stop 34 separate times; cherry-picking
+#    one squashed commit stops at most once.
 #  - The tree stays anchored to a release tag. Rebasing reset the checkout to
 #    the mozilla-central-based branch and rewrote it forward to the tag every
 #    cycle -- 12,538 files each way. Moving tag to tag touches a few hundred,
 #    so a new release rebuilds incrementally instead of almost entirely.
+#
+# Cherry-pick rather than `git apply --3way`, which is what this used to do.
+# git apply matches a patch to files by path and has no rename detection, so
+# an upstream move of a file the fork touches failed with
+# "<path>: does not exist in index" even when the change itself still applied
+# cleanly -- and failed with the whole apply rolled back, leaving no conflict
+# markers and a pristine tree to diagnose from. The merge machinery follows the
+# rename and applies the change at its new path instead. Renames like the
+# .jsm -> .sys.mjs migration hit three of the files this series touches.
 apply_patch_onto() {
   local tag="$1"
 
@@ -333,50 +384,63 @@ echo <upstream-commit> > $STATE/fork-base"
   git fetch upstream "refs/tags/$tag:refs/tags/$tag" \
     || die "could not fetch tag $tag"
 
-  # Tooling paths are excluded. They live in their own checkout, and applying
-  # them here would rewrite this script while it is running.
-  local patch="$STATE/fork.patch"
-  git diff "$base" "origin/$FORK_BRANCH" \
-    -- . ':!tools/fork' ':!.woodpecker' ':!.github' > "$patch" \
-    || die "could not generate the fork patch"
+  # Checked out here rather than inside build_fork_commit, which runs in a
+  # command substitution -- a die() in there would have its message captured as
+  # the function's output instead of reaching the log.
+  local commit tree origin_sha head_sha marker
+  commit="$(build_fork_commit "$base")" \
+    || die "could not build the squashed fork commit"
+  tree="$(git rev-parse "$commit^{tree}")"
 
-  if [ ! -s "$patch" ]; then
-    die "The generated patch is empty. origin/$FORK_BRANCH may not contain the \
-patch series, or the base is wrong."
+  if [ "$tree" = "$(git rev-parse "$base^{tree}")" ]; then
+    die "The fork branch's tree matches the base once tooling is excluded, so \
+there is nothing to apply. origin/$FORK_BRANCH may not contain the patch \
+series, or the base is wrong."
   fi
 
-  local origin_sha head_sha patch_sha marker
   origin_sha="$(git rev-parse "origin/$FORK_BRANCH")"
   head_sha="$(git rev-parse HEAD 2>/dev/null || echo none)"
-  patch_sha="$(sha1sum "$patch" | cut -d" " -f1)"
-  marker="$tag $origin_sha $base $head_sha $patch_sha"
+  # The tree, not the commit: commit-tree stamps the current time, so the
+  # commit differs on every run while the tree is content-addressed and only
+  # changes when the fork's changes do.
+  marker="$tag $origin_sha $base $head_sha $tree"
 
   if [ -f "$STATE/last-patch" ] \
       && [ "$(cat "$STATE/last-patch")" = "$marker" ]; then
-    log "Tree already at $tag with the current patch; skipping"
+    log "Tree already at $tag with the current fork changes; skipping"
     return 0
   fi
 
-  log "Checking out $tag and applying the fork patch ($(wc -l < "$patch") lines)"
+  log "Checking out $tag and cherry-picking the fork changes ($commit)"
+
+  # Clear the sequencer state a previous conflicted attempt left behind, or the
+  # cherry-pick below refuses to start with "a cherry-pick is already in
+  # progress". --quit rather than --abort: the checkout that follows sets the
+  # tree regardless, and --abort would first try to restore a HEAD that is
+  # about to be replaced.
+  git cherry-pick --quit 2>/dev/null || true
 
   # -f discards the certificates install_mar_cert wrote last cycle and the
-  # previous application of this patch. Object directories are gitignored and
-  # survive, which is what keeps the rebuild incremental.
+  # previous application, including any half-merged files and conflicted adds
+  # from a failed attempt. Object directories are gitignored and survive, which
+  # is what keeps the rebuild incremental.
   git checkout -f "refs/tags/$tag" || die "could not check out $tag"
 
-  # A conflict means upstream changed code the patch touches. Stop rather than
-  # build a half-merged download path: git apply leaves the conflict markers in
-  # place, so the failure is inspectable in $SRC.
-  if ! git apply --3way "$patch"; then
-    log "The fork patch does not apply to $tag"
+  # A conflict means upstream changed code the series touches. Stop rather than
+  # build a half-merged download path: the conflict markers are left in place,
+  # so the failure is inspectable in $SRC.
+  if ! git cherry-pick "$commit"; then
+    log "The fork changes do not merge onto $tag"
+    echo "$commit" > "$STATE/fork-commit"
     rm -f "$STATE/last-patch"
     return 1
   fi
 
   # Recorded so the next cycle can tell the tree is already correct. HEAD and
-  # the patch hash are included so a manual checkout, or an edit to the branch,
+  # the tree are included so a manual checkout, or an edit to the branch,
   # invalidates it rather than being silently kept.
-  echo "$tag $origin_sha $base $(git rev-parse HEAD) $patch_sha" \
+  echo "$commit" > "$STATE/fork-commit"
+  echo "$tag $origin_sha $base $(git rev-parse HEAD) $tree" \
     > "$STATE/last-patch"
   return 0
 }
@@ -617,12 +681,12 @@ run_once() {
   write_status "building" "patching onto $tag" "$version"
 
   if ! apply_patch_onto "$tag"; then
-    notify "The fork patch does not apply to $tag. Upstream changed code the \
+    notify "The fork changes do not merge onto $tag. Upstream changed code the \
 onDeterminingFilename series touches. No build was published for $version. \
 The conflict markers are left in $SRC for inspection; resolve it on \
-$FORK_BRANCH and push. Reproduce by hand with: git -C $SRC apply --3way \
-$STATE/fork.patch"
-    write_status "conflict" "patch series does not apply to $tag" "$version"
+$FORK_BRANCH and push. Reproduce by hand with: git -C $SRC cherry-pick \
+\$(cat $STATE/fork-commit)"
+    write_status "conflict" "patch series does not merge onto $tag" "$version"
     return 1
   fi
 
@@ -763,8 +827,9 @@ step_patch() {
   [ -n "$tag" ] || { log "no tag recorded; run detect first"; return 1; }
 
   if ! apply_patch_onto "$tag"; then
-    notify "The fork patch does not apply to $tag; conflicts left in $SRC."
-    write_status "conflict" "patch series does not apply to $tag" "$(ci_get version)"
+    notify "The fork changes do not merge onto $tag; conflicts left in $SRC. \
+Reproduce with: git -C $SRC cherry-pick \$(cat $STATE/fork-commit)"
+    write_status "conflict" "patch series does not merge onto $tag" "$(ci_get version)"
     return 1
   fi
 
