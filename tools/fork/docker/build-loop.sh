@@ -455,6 +455,16 @@ build_target() {
     export WINSYSROOT=/vs
   fi
 
+  if [ "$target" = "macos-aarch64" ]; then
+    ensure_rust_target aarch64-apple-darwin || return 1
+    # Nothing else to arrange. The macOS SDK is not in the image and is not
+    # mounted the way /vs is: configure fetches it on the first build through
+    # bootstrap_path (build/moz.configure/toolchain.configure:260), which
+    # downloads Apple's command line tools package from swcdn.apple.com and
+    # unpacks it under MOZBUILD_STATE_PATH -- on the state volume, so once.
+    # The linker is clang's own lld, so there is no cctools to install either.
+  fi
+
   # build/variables.py:95 only derives the source stamp from Mercurial or a
   # sourcestamp.txt. This tree is git with neither, so source-repo.h comes out
   # empty, and packaging then fails preprocessing it with "no preprocessor
@@ -536,8 +546,9 @@ publish_target() {
   log "Publishing $target artifacts for $version"
   cp -f "$ARTIFACTS/firefox-$version.$target.complete.mar" "$dl_dir/" || return 1
   case "$target" in
-    linux64) cp -f "$ARTIFACTS"/*.tar.xz "$dl_dir/" 2>/dev/null || true ;;
-    win64)   cp -f "$ARTIFACTS"/*.zip "$dl_dir/" 2>/dev/null || true ;;
+    linux64)       cp -f "$ARTIFACTS"/*.tar.xz "$dl_dir/" 2>/dev/null || true ;;
+    win64)         cp -f "$ARTIFACTS"/*.zip "$dl_dir/" 2>/dev/null || true ;;
+    macos-*)       cp -f "$ARTIFACTS"/*.tar.gz "$dl_dir/" 2>/dev/null || true ;;
   esac
   sync
 
@@ -648,8 +659,9 @@ $STATE/fork.patch"
     fi
 
     case "$target" in
-      linux64) cp -f "$FORK_OBJDIR"/dist/*.tar.xz "$ARTIFACTS"/ 2>/dev/null || true ;;
-      win64)   cp -f "$FORK_OBJDIR"/dist/*.zip "$ARTIFACTS"/ 2>/dev/null || true ;;
+      linux64)       cp -f "$FORK_OBJDIR"/dist/*.tar.xz "$ARTIFACTS"/ 2>/dev/null || true ;;
+      win64)         cp -f "$FORK_OBJDIR"/dist/*.zip "$ARTIFACTS"/ 2>/dev/null || true ;;
+      macos-*)       cp -f "$FORK_OBJDIR"/dist/*.tar.gz "$ARTIFACTS"/ 2>/dev/null || true ;;
     esac
 
     metadata+=("$ARTIFACTS/$target.mar.json")
@@ -794,8 +806,9 @@ step_mar() {
   FORK_SRCDIR="$SRC" "$FORK/make_mar.sh" "$target" "$objdir" "$ARTIFACTS" || return 1
 
   case "$target" in
-    linux64) cp -f "$objdir"/dist/*.tar.xz "$ARTIFACTS"/ 2>/dev/null || true ;;
-    win64)   cp -f "$objdir"/dist/*.zip "$ARTIFACTS"/ 2>/dev/null || true ;;
+    linux64)       cp -f "$objdir"/dist/*.tar.xz "$ARTIFACTS"/ 2>/dev/null || true ;;
+    win64)         cp -f "$objdir"/dist/*.zip "$ARTIFACTS"/ 2>/dev/null || true ;;
+    macos-*)       cp -f "$objdir"/dist/*.tar.gz "$ARTIFACTS"/ 2>/dev/null || true ;;
   esac
 
   ci_set "mar-$target" ok

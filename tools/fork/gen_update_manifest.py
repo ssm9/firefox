@@ -22,6 +22,7 @@ from xml.sax.saxutils import quoteattr
 BUILD_TARGETS = {
     "linux64": ["Linux_x86_64-gcc3"],
     "win64": ["WINNT_x86_64-msvc-x64", "WINNT_x86_64-msvc-aarch64"],
+    "macos-aarch64": ["Darwin_aarch64-gcc3"],
 }
 
 

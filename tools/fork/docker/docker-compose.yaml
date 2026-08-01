@@ -56,8 +56,9 @@ services:
       FORK_UPDATE_HOST: ${FORK_UPDATE_HOST:-firefox-builds.sai.town}
       FORK_UPDATE_SCHEME: ${FORK_UPDATE_SCHEME:-https}
 
-      # Targets to build. Drop win64 to skip the MSVC download entirely.
-      FORK_TARGETS: ${FORK_TARGETS:-linux64 win64}
+      # Targets to build. Drop win64 to skip the MSVC download entirely, or
+      # macos-aarch64 to skip Apple's SDK download.
+      FORK_TARGETS: ${FORK_TARGETS:-linux64 win64 macos-aarch64}
 
       FORK_REPO: https://github.com/ssm9/firefox
       FORK_BRANCH: ssm9/fork-build

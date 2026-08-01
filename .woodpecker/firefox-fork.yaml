@@ -46,7 +46,7 @@ steps:
       - /usr/local/bin/build-loop.sh step patch
     depends_on: [detect]
 
-  # The two targets run concurrently. This does not halve wall-clock time --
+  # linux64 and win64 run concurrently. This does not halve wall-clock time --
   # they share the same cores, so the gain is only from overlapping one build's
   # serial stretches (gkrust, the libxul link) with the other's parallel work.
   #
@@ -70,6 +70,27 @@ steps:
     depends_on: [patch]
     failure: ignore
 
+  # Queued behind linux64 rather than alongside it, for two reasons.
+  #
+  # Memory: three Firefox builds at once would raise the peak well past what
+  # BUILD_JOBS was tuned for. Waiting here keeps at most two running, so the
+  # existing guidance still holds.
+  #
+  # signmar: the mar step needs one that runs on the builder, and a
+  # cross-compiled target builds its own for the target -- this one produces a
+  # Mach-O. Only linux64 produces a host-native copy, and make_mar.sh finds it
+  # by searching sibling object directories, which works only once linux64 has
+  # got that far. Depending on it makes that ordering explicit instead of a
+  # race. linux64 is `failure: ignore`, so a failure there still lets this run
+  # and fail on its own terms rather than silently skipping the target.
+  - name: build-macos-aarch64
+    image: firefox-fork-builder:latest
+    commands:
+      - /usr/local/bin/build-loop.sh step build macos-aarch64
+      - /usr/local/bin/build-loop.sh step mar macos-aarch64
+    depends_on: [build-linux64]
+    failure: ignore
+
   # Each target publishes as soon as it is ready rather than waiting for the
   # other. Targets have separate MARs and separate manifest paths, so these do
   # not conflict; publish_target stages manifests per target for that reason.
@@ -87,6 +108,13 @@ steps:
     depends_on: [build-win64]
     failure: ignore
 
+  - name: publish-macos-aarch64
+    image: firefox-fork-builder:latest
+    commands:
+      - /usr/local/bin/build-loop.sh step publish macos-aarch64
+    depends_on: [build-macos-aarch64]
+    failure: ignore
+
   # Owns last-built, and is the step whose colour reflects the whole run.
   # Recording last-built inside a per-target publish would mark the release
   # done while another target was still failing, so it would never be retried.
@@ -94,4 +122,4 @@ steps:
     image: firefox-fork-builder:latest
     commands:
       - /usr/local/bin/build-loop.sh step finalize
-    depends_on: [publish-linux64, publish-win64]
+    depends_on: [publish-linux64, publish-win64, publish-macos-aarch64]
