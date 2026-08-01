@@ -4,6 +4,7 @@
 # Usage: run-step.sh <detect|patch|build|mar|publish|finalize> [target]
 #   e.g. run-step.sh detect
 #        run-step.sh build linux64
+#        run-step.sh build macos-aarch64
 #
 # Same image, same volumes and same code Woodpecker uses, so this exercises the
 # real pipeline without Woodpecker in the way. Useful for bringing the stack up,
@@ -41,7 +42,7 @@ mounts=(
 env_args=(
   -e FORK_UPDATE_HOST="${FORK_UPDATE_HOST:-firefox-builds.sai.town}"
   -e FORK_UPDATE_SCHEME="${FORK_UPDATE_SCHEME:-https}"
-  -e FORK_TARGETS="${FORK_TARGETS:-linux64 win64}"
+  -e FORK_TARGETS="${FORK_TARGETS:-linux64 win64 macos-aarch64}"
   -e BUILD_JOBS="${BUILD_JOBS:-}"
 )
 

@@ -11,10 +11,10 @@ Values assumed throughout — adjust if yours differ:
 | Update URL | `https://firefox-builds.sai.town` |
 | Origin port | `8088` |
 | Fork branch | `ssm9/fork-build` |
-| Targets | `linux64 win64` |
+| Targets | `linux64 win64 macos-aarch64` |
 
-Budget about **130 GB**: ~10 GB source, ~50 GB object dirs, ~40 GB sccache,
-~15 GB MSVC toolchain, plus published artifacts.
+Budget about **150 GB**: ~10 GB source, ~65 GB object dirs, ~40 GB sccache,
+~15 GB MSVC toolchain, ~5 GB macOS SDK, plus published artifacts.
 
 ## Before you start: `docker` needs `sudo`
 
@@ -130,7 +130,8 @@ Optional environment overrides:
 - `BUILD_JOBS` — cap parallelism so builds do not eat every core
 - `NOTIFY_URL` — any URL accepting a POST body, e.g. an ntfy topic
 - `WEB_PORT` — if 8088 clashes
-- `FORK_TARGETS` — set to `linux64` to skip Windows for now
+- `FORK_TARGETS` — set to `linux64` to skip the Windows and macOS toolchain
+  downloads for now
 
 It will start, clone the source into `/src` (slow — it is a large repo), and
 then stop with a fatal error about the missing signing key. **That is
@@ -253,10 +254,11 @@ Confirm exactly one builder is running:
 sudo docker ps --filter name=firefox-fork
 ```
 
-The first run does a lot of one-time work: `mach bootstrap` fetches toolchains,
-and if `win64` is in `FORK_TARGETS` it downloads the MSVC toolchain from
-Microsoft (several GB). Then it compiles Firefox, which takes hours with a cold
-sccache.
+The first run does a lot of one-time work: `mach bootstrap` fetches toolchains;
+if `win64` is in `FORK_TARGETS` it downloads the MSVC toolchain from Microsoft
+(several GB); and if `macos-aarch64` is, the first macOS `configure` downloads
+Apple's SDK from `swcdn.apple.com`. Then it compiles Firefox, which takes hours
+with a cold sccache.
 
 **If the patch does not apply**, upstream changed code the series touches. The
 conflict markers are left in `/src/firefox` for inspection, and nothing is
@@ -369,20 +371,28 @@ the dataset, and the containers are disposable.
 The pipeline is `.woodpecker/firefox-fork.yaml`:
 
 ```
-detect → patch ─┬→ build-linux64 → publish-linux64 ─┬→ finalize
-                └→ build-win64   → publish-win64   ─┘
+detect → patch ─┬→ build-linux64 ─┬→ publish-linux64 ───────┬→ finalize
+                │                 └→ build-macos-aarch64 ─┐ │
+                │                    → publish-macos-aarch64 │
+                └→ build-win64    → publish-win64 ──────────┘
 ```
 
-The two targets build concurrently and each publishes as soon as it is ready,
-so a slow or failing win64 no longer holds up a finished linux64. Both build
-steps are `failure: ignore`; `finalize` owns `last-built` and is the step whose
-colour reflects the run.
+Each target publishes as soon as it is ready, so a slow or failing win64 no
+longer holds up a finished linux64. Every build step is `failure: ignore`;
+`finalize` owns `last-built` and is the step whose colour reflects the run.
 
-**Set `BUILD_JOBS` to about half the core count** when both targets build at
-once. Unset, each build sizes itself for the whole machine, and two together
-oversubscribe the CPU and can coincide at peak memory — two `libxul` links at
-once is the likeliest way to exhaust RAM. To go back to sequential builds,
-change `build-win64`'s `depends_on` to `[build-linux64]`.
+`build-macos-aarch64` waits on `build-linux64` rather than running alongside
+it. Three concurrent Firefox builds would push peak memory past what
+`BUILD_JOBS` is tuned for, and the macOS `mar` step needs a `signmar` that runs
+on the builder — its own is a Mach-O, and only linux64 produces a host-native
+one.
+
+**Set `BUILD_JOBS` to about half the core count.** Unset, each build sizes
+itself for the whole machine, and two together oversubscribe the CPU and can
+coincide at peak memory — two `libxul` links at once is the likeliest way to
+exhaust RAM. Half rather than a third, because the queueing above means at most
+two of the three run at the same time. To go fully sequential, change
+`build-win64`'s `depends_on` to `[build-linux64]` as well.
 
 `skip_clone` is set: both checkouts under `/src` are managed by the build
 server, and the Firefox tree alone is over 6 GB.

@@ -1,0 +1,84 @@
+# Fork build configuration for Apple Silicon macOS, cross-compiled from Linux.
+#
+# Deliberately self-contained, for the same reason as the other mozconfigs: the
+# in-tree fragments chain to build/mozconfig.automation, which configure rejects
+# outside Mozilla automation (build/moz.configure/init.configure:205).
+#
+# No macOS machine is involved. The SDK is fetched from Apple's own CDN by
+# configure on the first build -- see the bootstrap note below -- and clang's
+# lld links Mach-O directly, so cctools is not needed either
+# (build/moz.configure/toolchain.configure:1674: lld is the macOS linker for
+# clang 15 and newer).
+
+ac_add_options --enable-application=browser
+ac_add_options --target=aarch64-apple-darwin
+
+# Also what pulls in the macOS SDK. configure resolves it through
+# bootstrap_path("MacOSX26.5.sdk")
+# (build/moz.configure/toolchain.configure:260); because that toolchain's
+# artifact is private, bootstrap falls back to running unpack-sdk.py locally
+# (build/moz.configure/bootstrap.configure:234), which downloads Apple's
+# command line tools package from swcdn.apple.com and unpacks it into
+# MOZBUILD_STATE_PATH. That is on the state volume, so it happens once.
+# Fetching it means accepting Apple's SDK licence.
+ac_add_options --enable-bootstrap
+
+# Clobber without asking. The tree's CLOBBER file changes on merge days and
+# whenever the build system changes incompatibly, and an unattended build
+# server has nobody to answer the prompt -- it would just stop every time.
+# Rebuilding from scratch is largely absorbed by sccache.
+mk_add_options AUTOCLOBBER=1
+
+ac_add_options --enable-optimize
+ac_add_options --disable-debug
+
+# Firefox branding may not be used on modified builds.
+ac_add_options --with-branding=browser/branding/unofficial
+
+ac_add_options --enable-updater
+ac_add_options --enable-update-channel=ssm9
+
+# The updater rejects any MAR whose channel ID is not in the accepted list.
+# These must match the MAR_CHANNEL_ID that tools/fork/make_mar.sh stamps in.
+export MAR_CHANNEL_ID=ssm9
+export ACCEPTED_MAR_CHANNEL_IDS=ssm9
+
+# MAR signature verification is on by default and must stay that way.
+#
+# Not switched to NSS with --enable-nss-mar. On macOS the default is the system
+# implementation, which verifies against the public key of the certificate
+# compiled into the updater with no trust evaluation
+# (modules/libmar/verify/MacVerifyCrypto.cpp), so a self-signed fork
+# certificate works exactly as it does on the other targets. That is also the
+# path every shipped Firefox uses on macOS, so it is the better-tested one.
+
+# A tarball rather than the default DMG (toolkit/moz.configure:3749).
+#
+# A DMG would need two more toolchains on the builder -- hfsplus and
+# libdmg-hfsplus, as MKFSHFS/HFS_TOOL/DMG_TOOL -- to assemble an HFS+ image on
+# Linux. It would also steer installs towards /Applications, and an install
+# there that is not writable by the invoking user makes the updater prompt for
+# elevation on every update (toolkit/xre/nsUpdateDriver.cpp:451).
+# tools/fork/install-macos.sh unpacks this into ~/Applications instead.
+export MOZ_PKG_FORMAT=TGZ
+
+# MOZ_PKG_PLATFORM is "mac" for every macOS CPU (toolkit/moz.configure:3683),
+# so an x86_64 target added later would produce an identically named archive
+# and overwrite this one in the artifacts and download directories.
+export MOZ_PKG_PLATFORM=mac-aarch64
+
+# aarch64-apple-darwin defaults to -mcpu=apple-a7, which leaves most of the
+# CPU's performance features disabled. Mozilla's own mac builds set this for
+# the same reason (browser/config/mozconfigs/macosx64-aarch64/common-opt).
+export CFLAGS="$CFLAGS -mcpu=apple-m1"
+export CXXFLAGS="$CXXFLAGS -mcpu=apple-m1"
+
+MOZ_REQUIRE_SIGNING=
+
+# Warm sccache is what makes release-to-release rebuilds tolerable on a single
+# machine. Conditional so this mozconfig still works without it installed.
+if command -v sccache > /dev/null 2>&1; then
+  ac_add_options --with-ccache=sccache
+fi
+
+export MOZILLA_OFFICIAL=1

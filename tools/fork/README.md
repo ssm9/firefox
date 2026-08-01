@@ -38,14 +38,40 @@ through the WireGuard tunnel, so builds keep updating away from the LAN.
 
 ## Scope
 
-Builds **linux64** and **win64**, both cross-compiled from Linux.
+Builds **linux64**, **win64** and **macos-aarch64**, all cross-compiled from
+Linux. No Windows machine and no Mac is involved in producing any of them.
 
-macOS is deliberately not built. A MAR rewrites files inside the `.app`, so the
-bundle must be signed *before* the MAR is generated or updated installs land
-with a broken code-signing seal. Ad-hoc signing re-breaks that seal on every
-update, so seamless macOS auto-update effectively requires Developer ID plus
-notarization. Deferred until the chain is proven on the two platforms with no
-signing complications.
+macOS is Apple Silicon only, and a single-architecture build rather than a
+universal binary. Intel Macs are not covered: Rosetta translates x86_64 to
+arm64 and not the reverse, so nothing here runs on one. Adding an x86_64 target
+is a second mozconfig and an entry in `FORK_TARGETS`; it is left out because it
+would add a third full Firefox compile per release for hardware Apple stopped
+selling in 2020.
+
+### What macOS code signing does and does not affect
+
+These builds carry no Developer ID signature and are not notarized. That is
+worth being precise about, because it is easy to assume it breaks auto-update.
+It does not.
+
+- *Updates.* Nothing in the update path checks the application's signature.
+  MAR verification on macOS goes through `SecVerifyTransform` against the public
+  key of the certificate compiled into the updater, with no trust evaluation
+  (`modules/libmar/verify/MacVerifyCrypto.cpp`) — the same guarantee the NSS
+  path gives on Linux. The Windows equivalent, the maintenance service's
+  Authenticode check, has no counterpart here.
+- *Launching.* Apple Silicon requires every executable to carry a signature,
+  but an ad-hoc one satisfies it, and lld attaches one to each Mach-O as it
+  links. A complete MAR replaces those files byte for byte, so an update
+  cannot invalidate what it did not modify. There is no bundle-level
+  `_CodeSignature` to fall out of step with the files, precisely because the
+  bundle is unsigned.
+- *Gatekeeper.* This is what the absence of a signature does cost. A bundle
+  downloaded through a browser is flagged with `com.apple.quarantine`, and an
+  unsigned quarantined bundle is refused outright — reported, unhelpfully, as
+  the application being damaged. `install-macos.sh` clears the flag.
+- *Elevation.* Not a signing problem, but it becomes one if the install lands
+  in the wrong place. See "Install location on macOS" below.
 
 ## The URL is permanent
 
@@ -150,7 +176,8 @@ the key means every user reinstalls by hand; there is no recovery path.
 /mnt/tank/firefox-fork/
 ├── src/        git checkout          (~10 GB)
 ├── obj/        object directories    (~50 GB)
-├── state/      toolchains, sccache, mar-nss/ (key + certs), markers (~50 GB)
+├── state/      toolchains, sccache, mar-nss/ (key + certs), markers (~55 GB)
+│              also where the macOS SDK lands, under mozbuild/
 ├── www/        published manifests and MARs
 ├── vs/         MSVC toolchain, downloaded on first run (~15 GB, win64 only)
 └── config/     nginx.conf from this directory
@@ -179,9 +206,34 @@ If you ever need to do it by hand:
 It is a several-GB download, done once. Fetching it means accepting Microsoft's
 Build Tools licence terms.
 
-Drop `win64` from `FORK_TARGETS` to skip this entirely and build linux64 only.
+Drop `win64` from `FORK_TARGETS` to skip this entirely.
 
-### 5. Patch base
+### 5. macOS SDK
+
+Nothing to do, and nothing to mount — unlike MSVC this needs no dataset of its
+own.
+
+Apple's SDK ships inside the Command Line Tools package, which Apple serves
+publicly from `swcdn.apple.com`. `configure` resolves it through
+`bootstrap_path("MacOSX26.5.sdk")`
+(`build/moz.configure/toolchain.configure:260`), and because that toolchain's
+CI artifact is private, bootstrap falls back to running `unpack-sdk.py` locally
+(`build/moz.configure/bootstrap.configure:234`) — which downloads the package,
+checks it against the SHA-512 recorded in
+`taskcluster/kinds/toolchain/macos-sdk.yml`, and unpacks it under
+`MOZBUILD_STATE_PATH` on the state volume. That is pure Python; no Xcode, no
+Mac, no Apple ID.
+
+Fetching it means accepting Apple's SDK licence terms.
+
+The linker is clang's own lld, which emits Mach-O directly
+(`build/moz.configure/toolchain.configure:1674`), so unlike Mozilla's own cross
+builds there is no cctools to install. `llvm-ar`, `llvm-strip`,
+`llvm-install-name-tool` and the rest come from the bootstrapped clang.
+
+Drop `macos-aarch64` from `FORK_TARGETS` to skip the download.
+
+### 6. Patch base
 
 Nothing to configure. The build server derives where the fork's own commits
 begin, as the merge base of the fork branch and `origin/main`.
@@ -202,7 +254,7 @@ express:
 echo <upstream-commit> > /mnt/tank/firefox-fork/state/fork-base
 ```
 
-### 6. Install the app
+### 7. Install the app
 
 Apps > Discover Apps > Custom App > Install via YAML, using
 `docker-compose.yaml` from this directory.
@@ -248,6 +300,32 @@ Updates therefore run unelevated, as the invoking user, which means **Firefox
 must be installed somewhere user-writable** — under `%LOCALAPPDATA%`, not
 `Program Files`. Installed into `Program Files`, it will download updates and
 then silently fail to apply them.
+
+## Install location on macOS
+
+Same rule, different mechanism. Firefox decides whether an update needs
+elevation purely by testing whether the install directory is writable by the
+user running it (`toolkit/xre/nsUpdateDriver.cpp:451`). Install under
+`~/Applications` and that test passes, so updates apply silently in place.
+
+Install into `/Applications` and it depends on who owns the bundle. Owned by
+you, it still works; owned by anyone else, every update raises an administrator
+prompt — and that path runs through a privileged helper which checks the caller
+against a code signing requirement that an unsigned build cannot meet.
+
+`install-macos.sh` unpacks into `~/Applications` for that reason, and clears
+`com.apple.quarantine` so Gatekeeper does not refuse the unsigned bundle. The
+equivalent by hand:
+
+```sh
+tar -xf firefox-<version>.en-US.mac-aarch64.tar.gz
+mv firefox/*.app ~/Applications/
+xattr -dr com.apple.quarantine ~/Applications/*.app
+```
+
+The bundle is named for the branding's display name, so unofficial branding
+produces `Nightly.app` rather than `Firefox.app`. That is cosmetic, and it
+keeps the install from colliding with a real Firefox in the same directory.
 
 ## On the transport
 
@@ -335,10 +413,16 @@ sudo docker exec -it firefox-fork-builder bash -c '
 '
 ```
 
-Manifest reachable at the exact path a client will ask for:
+The same command verifies the win64 and macos-aarch64 MARs — point it at their
+files. Signature checking does not care which architecture the MAR was built
+for, and the linux64 `signmar` is the only one that runs on the builder anyway.
+
+Manifest reachable at the exact path a client will ask for, one per target:
 
 ```sh
 curl https://firefox-builds.sai.town/updates/Linux_x86_64-gcc3/ssm9/update.xml
+curl https://firefox-builds.sai.town/updates/WINNT_x86_64-msvc-x64/ssm9/update.xml
+curl https://firefox-builds.sai.town/updates/Darwin_aarch64-gcc3/ssm9/update.xml
 ```
 
 **The test that matters:** install release N, let it update to N+1, and confirm
@@ -378,6 +462,8 @@ stable `browser_specific_settings.gecko.id` in the extension manifest.
 - **en-US only.** No l10n repacks.
 - **Unofficial branding.** Firefox branding may not be used on modified builds.
 - **Complete MARs only.** Every update is a full download; no partials.
-- **No macOS** — see Scope above.
+- **macOS is Apple Silicon only**, and the bundle is unsigned and not
+  notarized — see Scope above. First install needs `install-macos.sh`, or the
+  quarantine flag cleared by hand.
 - **Clients must be on the WireGuard tunnel** to receive updates, and the
   update hostname must resolve through it.

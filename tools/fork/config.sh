@@ -27,9 +27,9 @@ export FORK_DOWNLOAD_BASE_URL="${FORK_UPDATE_SCHEME}://${FORK_UPDATE_HOST}/downl
 export FORK_NSS_DIR="${FORK_NSS_DIR:-$HOME/.ssm9-mar-nss}"
 export FORK_MAR_CERT_NICKNAME=ssm9-mar
 
-# Targets built by the pipeline. macOS is deliberately absent; see README.md.
-# Overridable from the environment so the compose file can narrow it.
-export FORK_TARGETS="${FORK_TARGETS:-linux64 win64}"
+# Targets built by the pipeline. Overridable from the environment so the compose
+# file can narrow it.
+export FORK_TARGETS="${FORK_TARGETS:-linux64 win64 macos-aarch64}"
 
 # Maps a target to the BUILD_TARGET strings Firefox may send in its update URL.
 # BUILD_TARGET is `appinfo.OS + "_" + ABI` (toolkit/modules/UpdateUtils.sys.mjs:90).
@@ -42,6 +42,10 @@ fork_build_targets() {
     linux64) echo "Linux_x86_64-gcc3" ;;
     # x64 hardware, and ARM64 hardware running the x64 build under emulation.
     win64)   echo "WINNT_x86_64-msvc-x64 WINNT_x86_64-msvc-aarch64" ;;
+    # One path only. macOS appends nothing to the ABI the way Windows does, and
+    # this is a single-architecture build rather than a universal binary, so it
+    # only ever runs natively on Apple Silicon and only ever asks for this one.
+    macos-aarch64) echo "Darwin_aarch64-gcc3" ;;
     *) echo "unknown target: $1" >&2; return 1 ;;
   esac
 }

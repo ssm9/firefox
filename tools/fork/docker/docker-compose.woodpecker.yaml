@@ -87,12 +87,14 @@ services:
 
       FORK_UPDATE_HOST: ${FORK_UPDATE_HOST:-firefox-builds.sai.town}
       FORK_UPDATE_SCHEME: ${FORK_UPDATE_SCHEME:-https}
-      FORK_TARGETS: ${FORK_TARGETS:-linux64 win64}
+      FORK_TARGETS: ${FORK_TARGETS:-linux64 win64 macos-aarch64}
 
-      # Set this when both targets build concurrently, to roughly half the core
+      # Set this when targets build concurrently, to roughly half the core
       # count. Left unset, each build sizes itself for the whole machine, so two
       # together oversubscribe the CPU and can coincide at peak memory -- two
       # libxul links at once is the most likely way to run the NAS out of RAM.
+      # Half rather than a third: the pipeline queues macos-aarch64 behind
+      # linux64, so at most two of the three ever run at the same time.
       BUILD_JOBS: ${BUILD_JOBS:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

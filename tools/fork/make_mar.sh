@@ -39,9 +39,27 @@ mkdir -p "$OUTDIR"
 OUTDIR="$(cd "$OUTDIR" && pwd)"
 
 # `mach package` leaves the unpacked application here.
+#
+# On macOS it stages an application bundle one level further down, and
+# make_full_update.sh takes the bundle itself as its root -- it looks for
+# precomplete at Contents/Resources/precomplete for exactly this case. The
+# bundle is named after the branding's display name rather than the
+# application, so it is found by glob instead of being hardcoded: unofficial
+# branding produces Nightly.app.
 case "$TARGET" in
   linux64) APPDIR="$OBJDIR/dist/firefox" ;;
   win64)   APPDIR="$OBJDIR/dist/firefox" ;;
+  macos-*)
+    shopt -s nullglob
+    BUNDLES=("$OBJDIR"/dist/firefox/*.app)
+    shopt -u nullglob
+    if [ "${#BUNDLES[@]}" -ne 1 ]; then
+      echo "ERROR: expected one .app in $OBJDIR/dist/firefox," \
+           "found ${#BUNDLES[@]}." >&2
+      exit 1
+    fi
+    APPDIR="${BUNDLES[0]}"
+    ;;
   *) echo "unknown target: $TARGET" >&2; exit 1 ;;
 esac
 
@@ -58,7 +76,15 @@ fi
 # could never work: a missing file made cat fail, pipefail propagated it, and
 # the script exited before reaching the fallback -- silently, because stderr
 # was redirected away.
-APPINI="$APPDIR/application.ini"
+#
+# The resource directory is the package root everywhere except macOS, where the
+# manifest puts it under the bundle (toolkit/moz.configure:3829).
+case "$TARGET" in
+  macos-*) RESDIR="$APPDIR/Contents/Resources" ;;
+  *)       RESDIR="$APPDIR" ;;
+esac
+
+APPINI="$RESDIR/application.ini"
 if [ ! -f "$APPINI" ]; then
   echo "ERROR: $APPINI not found." >&2
   exit 1
@@ -89,7 +115,16 @@ if [ ! -s "$CERT_DER" ]; then
   exit 1
 fi
 
-UPDATER_BIN="$APPDIR/updater"
+# Where the packaged updater ends up, per target
+# (browser/installer/package-manifest.in:388). On macOS it is an application
+# bundle of its own, nested inside the browser's, whose executable is named
+# after the bundle identifier rather than the program.
+case "$TARGET" in
+  win64)   UPDATER_BIN="$APPDIR/updater.exe" ;;
+  macos-*) UPDATER_BIN="$APPDIR/Contents/MacOS/updater.app/Contents/MacOS/org.mozilla.updater" ;;
+  *)       UPDATER_BIN="$APPDIR/updater" ;;
+esac
+
 if [ -f "$UPDATER_BIN" ]; then
   if python3 - "$CERT_DER" "$UPDATER_BIN" <<'PY'
 import sys
