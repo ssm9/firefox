@@ -308,6 +308,25 @@ Replace every `/mnt/tank/...` path with your real dataset paths.
 
 Progress is written to `/status.json`, served alongside the manifests.
 
+### The build ID exists twice, and both copies have to agree
+
+`buildid.h` is stamped with the wall-clock time every time it is regenerated,
+and it is regenerated more than once per cycle — packaging re-runs it after the
+compile is over. A finished build therefore carries the build ID in two places:
+in `application.ini`, and compiled into the launcher as `application.ini.h`
+(`build/moz.build:122`). `appinfo.appBuildID` — what `about:support` shows, and
+what the update service compares against the manifest — is read from the
+compiled-in copy and never from the file, while `make_mar.sh` reads the file.
+
+When those two drift apart, the manifest advertises a build ID no install can
+ever report: the update downloads, applies, and the next check offers the same
+update again, forever. `build-loop.sh` pins `MOZ_BUILD_DATE` for the whole cycle
+so the value cannot move, and `make_mar.sh` refuses to package a build whose
+launcher does not contain the build ID its `application.ini` claims.
+
+Installs already stuck in that loop recover on their own once one consistent
+build is published; they are not left behind.
+
 ## Resource notes
 
 Firefox is a heavy build — expect hours on typical NAS hardware, and set

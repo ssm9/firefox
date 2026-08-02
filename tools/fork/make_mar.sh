@@ -98,6 +98,44 @@ if [ -z "$VERSION" ] || [ -z "$BUILDID" ]; then
   exit 1
 fi
 
+# Confirm the build ID just read is the one the installed browser will report.
+#
+# These are not the same thing. application.ini is also compiled into the
+# launcher, as application.ini.h (build/moz.build:122), and appinfo.appBuildID
+# -- what the update service compares against the manifest, and what
+# about:support displays -- comes from that compiled-in copy
+# (browser/app/ApplicationData.cpp). The file next to it is not consulted. If
+# buildid.h is regenerated between compiling the launcher and generating the
+# application.ini that gets packaged, the two disagree.
+#
+# Publishing that disagreement produces an update loop: the manifest advertises
+# a build ID the installed browser can never report, so it takes the update,
+# comes back reporting the old one, and is offered the same update again. The
+# fix is upstream of here -- build-loop.sh pins MOZ_BUILD_DATE -- but the check
+# belongs on this side, because nothing else notices. The MAR is well-formed,
+# it installs cleanly, and the damage only shows up on other people's machines.
+case "$TARGET" in
+  linux64) LAUNCHER="$APPDIR/firefox" ;;
+  win64)   LAUNCHER="$APPDIR/firefox.exe" ;;
+  macos-*) LAUNCHER="$APPDIR/Contents/MacOS/firefox" ;;
+esac
+
+if [ ! -f "$LAUNCHER" ]; then
+  echo "ERROR: $LAUNCHER not found." >&2
+  exit 1
+fi
+
+if ! grep -aqF "$BUILDID" "$LAUNCHER"; then
+  echo "ERROR: $LAUNCHER was not built with build ID $BUILDID." >&2
+  echo "$APPINI says $BUILDID, but the launcher embeds its own copy and that is" >&2
+  echo "what appinfo.appBuildID reports, so a manifest generated from this MAR" >&2
+  echo "would advertise an update the resulting install can never satisfy." >&2
+  echo "Rebuild with MOZ_BUILD_DATE=$BUILDID set for both build and package." >&2
+  echo "Build-ID-shaped strings in the launcher:" >&2
+  grep -aoE '20[0-9]{12}' "$LAUNCHER" | sort -u >&2 || true
+  exit 1
+fi
+
 # Confirm the updater being shipped actually trusts the key this MAR will be
 # signed with.
 #

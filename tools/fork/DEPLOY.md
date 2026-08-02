@@ -332,6 +332,19 @@ Manifest at the exact path a client asks for:
 curl https://firefox-builds.sai.town/updates/Linux_x86_64-gcc3/ssm9/update.xml
 ```
 
+The `buildID` in that manifest has to be the one the installed browser reports
+in `about:support`, not merely the one in the packaged `application.ini` — see
+"The build ID exists twice" in README.md. `make_mar.sh` enforces this, but it
+can be checked against a published build directly:
+
+```sh
+# The launcher carries its own copy of the build ID, and that copy is what
+# appinfo.appBuildID returns. A couple of unrelated 14-digit strings show up in
+# the same binary, so ask about the advertised value rather than listing them.
+grep -aqF <buildID-from-the-manifest> /path/to/firefox \
+  && echo "matches" || echo "MISMATCH: this install will loop on the update"
+```
+
 Install scripts, which the build loop copies into `/www/install/` from the
 tooling checkout on every run — a 404 here means the loop has not completed a
 cycle since this was deployed:
