@@ -649,6 +649,32 @@ publish_target() {
   return 0
 }
 
+# The install scripts, served beside the builds they install so a client is
+# never sent somewhere else to fetch them. They come out of the tooling
+# checkout, so what is served tracks the branch that produced the build rather
+# than whatever was copied onto the NAS by hand at deploy time.
+publish_install_scripts() {
+  local dir="$WWW/install" script name tmp
+  mkdir -p "$dir" || return 1
+
+  for script in "$FORK/install-linux.sh" "$FORK/install-macos.sh"; do
+    name="$(basename "$script")"
+    if [ ! -f "$script" ]; then
+      log "WARNING: $name is missing from the tooling checkout"
+      continue
+    fi
+
+    # Copied under a temporary name and renamed into place. Steps run
+    # concurrently, and a client fetching a half-written script would run it.
+    tmp="$(mktemp "$dir/.$name.XXXXXX")" || return 1
+    if cp -f "$script" "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$dir/$name"; then
+      continue
+    fi
+    rm -f "$tmp"
+    log "WARNING: could not publish $name"
+  done
+}
+
 # Loop entry point: publish every target that produced metadata. Shares
 # publish_target with the CI path so the two cannot diverge.
 publish() {
@@ -669,6 +695,9 @@ publish() {
 
 run_once() {
   ensure_tools
+  # After the fetch, so a change to the scripts reaches the server on the next
+  # cycle rather than waiting for the container to be restarted.
+  publish_install_scripts
   ensure_source
 
   local last_built=""
@@ -1017,6 +1046,11 @@ main() {
   . "$FORK/config.sh" || die "could not source tools/fork/config.sh"
 
   preflight
+
+  # Every invocation, not just a publish: under CI the phases are separate
+  # processes, and this way the scripts land even on a run that never gets as
+  # far as publishing a build.
+  publish_install_scripts
 
   # Step mode: a CI system drives the phases and this exits after one.
   if [ "${1:-}" = "step" ]; then

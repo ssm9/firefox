@@ -107,3 +107,9 @@ echo
 echo "To load an unsigned extension, set xpinstall.signatures.required to false"
 echo "in about:config. Check for updates under About; the build points at the"
 echo "fork update server and applies them in place."
+echo
+echo "Also confirm browser.download.force_save_internally_handled_attachments"
+echo "is false. It defaults to false, but a profile that has it on saves a PDF"
+echo "served as an attachment straight to disk without going through the"
+echo "helper-app dialog, and the extension never sees onDeterminingFilename"
+echo "for it. Both are profile settings: set them once, not after every update."
