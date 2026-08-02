@@ -28,7 +28,8 @@ lets updates work at all.
 TrueNAS SCALE custom app
 ├── builder    polls upstream every 6h; on a new release, cherry-picks the
 │              patch series, builds, signs MARs, publishes into /www
-└── web        nginx serving /www (manifests + MARs), on host port 8088
+└── web        nginx serving /www (manifests, MARs, install scripts), on host
+               port 8088
 
 WireGuard client → nginx-proxy-manager → <nas-ip>:8088
 ```
@@ -313,6 +314,44 @@ Firefox is a heavy build — expect hours on typical NAS hardware, and set
 `BUILD_JOBS` below your core count if builds starve the NAS of CPU for its
 actual job. The sccache on the state volume is what keeps release-to-release
 rebuilds tolerable; do not put it on a tmpfs or wipe it between runs.
+
+## Installing a build
+
+The install scripts are served by the same nginx that serves the updates, under
+`/install/`, and the build loop copies them out of the tooling checkout on every
+cycle. A client therefore needs one hostname and no copy of this repository:
+
+```sh
+# Linux
+curl -O https://firefox-builds.sai.town/downloads/<version>/firefox-<version>.en-US.linux-x86_64.tar.xz
+curl -O https://firefox-builds.sai.town/install/install-linux.sh
+bash install-linux.sh firefox-<version>.en-US.linux-x86_64.tar.xz
+
+# macOS
+curl -O https://firefox-builds.sai.town/downloads/<version>/firefox-<version>.en-US.mac-aarch64.tar.gz
+curl -O https://firefox-builds.sai.town/install/install-macos.sh
+bash install-macos.sh firefox-<version>.en-US.mac-aarch64.tar.gz
+```
+
+Browse `/downloads/` for the current version. The scripts are served uncached and
+as `text/plain`, so they can be read before being run and never lag behind the
+branch the builds came from.
+
+Windows has no script — unpack the zip under `%LOCALAPPDATA%`. Both scripts
+install under the user's home directory for the reasons below.
+
+### After the first install
+
+Two `about:config` settings, per profile rather than per update:
+
+- `xpinstall.signatures.required` → `false`, to load an unsigned extension.
+- `browser.download.force_save_internally_handled_attachments` → `false`. It
+  already defaults to false, but a profile carrying it as true force-saves any
+  internally-handled attachment — a PDF served as `Content-Disposition:
+  attachment` — straight to disk with `action = saveToDisk` and `alwaysAsk =
+  false` (`uriloader/exthandler/nsExternalHelperAppService.cpp:1881`). That
+  path skips the helper-app dialog, which is where the patch fires
+  `onDeterminingFilename`, so the extension never gets to name the file.
 
 ## Install location on Windows
 

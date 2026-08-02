@@ -332,6 +332,15 @@ Manifest at the exact path a client asks for:
 curl https://firefox-builds.sai.town/updates/Linux_x86_64-gcc3/ssm9/update.xml
 ```
 
+Install scripts, which the build loop copies into `/www/install/` from the
+tooling checkout on every run — a 404 here means the loop has not completed a
+cycle since this was deployed:
+
+```sh
+curl https://firefox-builds.sai.town/install/install-linux.sh
+curl https://firefox-builds.sai.town/install/install-macos.sh
+```
+
 **The test that actually matters:** install the published build, wait for the
 next release to be built, let it auto-update, and confirm the extension still
 routes downloads afterwards. Everything else can pass while this fails, and
