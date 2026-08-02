@@ -615,7 +615,7 @@ const queryHelper = async query => {
   return results;
 };
 
-async function applyFilenameSuggestion(suggestion, currentPath) {
+async function applyFilenameSuggestion(suggestion, currentPath, baseDir = null) {
   let { filename: suggestedFilename, conflictAction } = suggestion;
   if (!suggestedFilename) {
     return null;
@@ -653,7 +653,7 @@ async function applyFilenameSuggestion(suggestion, currentPath) {
     return null;
   }
 
-  const dir = PathUtils.parent(currentPath);
+  const dir = baseDir ?? PathUtils.parent(currentPath);
   const newPath = PathUtils.joinRelative(dir, suggestedFilename);
   await IOUtils.makeDirectory(PathUtils.parent(newPath));
 
@@ -742,6 +742,11 @@ this.downloads = class extends ExtensionAPIPersistent {
         const serialized = download._syntheticSerialized ??
           (DownloadMap.byDownload.get(download) ||
            DownloadMap.newFromDownload(download, null)).serialize();
+        // Alone among the places DownloadItem is exposed, this event reports
+        // the tentative leaf name rather than the full target path, matching
+        // Chrome. Listeners build a relative path out of it, so handing over an
+        // absolute path yields suggestions like "images//home/me/pic.jpg".
+        serialized.filename = PathUtils.filename(download.target.path);
         let suggestion;
         try {
           suggestion = await fire.async(serialized);
@@ -752,11 +757,17 @@ this.downloads = class extends ExtensionAPIPersistent {
         if (suggestion) {
           const newPath = await applyFilenameSuggestion(
             suggestion,
-            download.target.path
+            download.target.path,
+            download._filenameBaseDir
           );
           if (newPath) {
             download.target.path = newPath;
-            download.target.partFilePath = `${newPath}.part`;
+            // Only downloads that already used a ".part" file get one at the
+            // new path; inventing one makes DownloadLegacySaver skip creating
+            // the target and then move a file that never existed.
+            if (download.target.partFilePath) {
+              download.target.partFilePath = `${newPath}.part`;
+            }
           }
         }
       };
