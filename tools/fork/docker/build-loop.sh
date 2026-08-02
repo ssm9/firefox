@@ -503,9 +503,45 @@ be fetched. Mount it read-write, or drop win64 from FORK_TARGETS."
   log "MSVC toolchain ready"
 }
 
+# Fix the build ID every artifact in this cycle is stamped with.
+#
+# Left to itself, build/variables.py:buildid_header stamps datetime.now() every
+# time buildid.h is regenerated, and it is regenerated more than once per cycle
+# -- packaging re-runs it after the compile is over. The published 153.0.1
+# builds came out with the launcher compiled at 20260802155501 and the
+# application.ini staged beside it reading 20260802155509.
+#
+# That gap breaks updates rather than merely looking untidy. application.ini is
+# compiled into the launcher as application.ini.h (build/moz.build:122), and
+# appinfo.appBuildID -- what about:support shows, and what the update service
+# compares against the manifest -- is read from that compiled-in copy
+# (browser/app/ApplicationData.cpp), never from the file on disk. make_mar.sh
+# reads the file, so the manifest advertised a build ID no install could ever
+# report: every check offered the same update, applying it changed nothing, and
+# the next check offered it again.
+#
+# Recorded through ci_set rather than exported because under CI each phase is
+# its own process, and because `./mach build` and `./mach package` have to
+# agree -- the regeneration happens between them.
+mint_buildid() {
+  local id; id="$(date -u +%Y%m%d%H%M%S)"
+  ci_set buildid "$id"
+  log "Build ID for this cycle: $id"
+}
+
 build_target() {
   local target="$1"
   cd "$SRC" || die "cannot enter $SRC"
+
+  # See mint_buildid. Deliberately fatal rather than falling back to a fresh
+  # stamp: a value minted here would differ from the one the other targets and
+  # the other phases used, which is the problem this exists to prevent.
+  MOZ_BUILD_DATE="$(ci_get buildid)"
+  if [ -z "$MOZ_BUILD_DATE" ]; then
+    log "ERROR: no build ID recorded for this cycle; run the detect step first"
+    return 1
+  fi
+  export MOZ_BUILD_DATE
 
   export MOZCONFIG="$FORK/mozconfigs/$target"
   [ -n "$BUILD_JOBS" ] && export MOZ_MAKE_FLAGS="-j$BUILD_JOBS"
@@ -737,6 +773,7 @@ $FORK_BRANCH and push. Reproduce by hand with: git -C $SRC cherry-pick \
   check_url_consistency
   install_mar_cert
   ensure_bootstrap
+  mint_buildid
 
   rm -rf "$ARTIFACTS"
   mkdir -p "$ARTIFACTS"
@@ -848,6 +885,10 @@ step_detect() {
     write_status "idle" "up to date" "$version"
     return 0
   fi
+
+  # Here rather than in step_build: every target in the pipeline has to be
+  # stamped with the same value, and step_build runs once per target.
+  mint_buildid
 
   log "Firefox $version needs building (tag $tag)"
   write_status "building" "detected $version" "$version"
