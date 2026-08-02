@@ -304,7 +304,8 @@ export class nsUnknownContentTypeDialog {
             aLauncher.source.spec,
             tentativePath,
             aLauncher.MIMEInfo?.MIMEType ?? null,
-            isPrivate
+            isPrivate,
+            preferredDir
           );
         lazy.DownloadIntegration.markLauncherProcessed(aLauncher);
         if (newPath !== tentativePath) {

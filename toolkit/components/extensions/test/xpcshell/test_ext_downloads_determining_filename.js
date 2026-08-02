@@ -117,9 +117,10 @@ add_task(async function test_onDeterminingFilename_fires() {
   caller.sendMessage(TXT_URL);
 
   const item = await listener.awaitMessage("determining");
-  ok(
-    item.filename.endsWith(TXT_FILE),
-    `onDeterminingFilename received the correct filename (got ${item.filename})`
+  equal(
+    item.filename,
+    TXT_FILE,
+    "onDeterminingFilename receives the leaf name, not the full target path"
   );
 
   listener.sendMessage(null);
@@ -154,7 +155,8 @@ add_task(async function test_onDeterminingFilename_item_properties() {
   const item = await listener.awaitMessage("determining");
   ok(typeof item.id === "number", "item.id is a number");
   ok(item.url.endsWith(TXT_FILE), `item.url (${item.url}) points to the downloaded file`);
-  ok(item.filename.endsWith(TXT_FILE), `item.filename (${item.filename}) ends with the expected name`);
+  equal(item.filename, TXT_FILE, "item.filename is the leaf name");
+  ok(!item.filename.includes("/"), "item.filename has no path separator");
   equal(item.state, "in_progress", "item.state is in_progress at determination time");
 
   listener.sendMessage(null);
@@ -223,6 +225,52 @@ add_task(async function test_onDeterminingFilename_subdir() {
 
   await caller.unload();
   await listener.unload();
+});
+
+// ---------------------------------------------------------------------------
+// Test: a listener that builds a relative path out of item.filename, the way
+// download-organiser style extensions do. If the event hands over the full
+// target path instead of the leaf, this produces "images//tmp/.../file.txt"
+// and applyFilenameSuggestion rejects it.
+// ---------------------------------------------------------------------------
+add_task(async function test_onDeterminingFilename_prefixed_with_item_filename() {
+  const prefixer = ExtensionTestUtils.loadExtension({
+    manifest: { permissions: ["downloads"] },
+    background() {
+      browser.downloads.onDeterminingFilename.addListener(item => {
+        browser.test.sendMessage("suggested", "images/" + item.filename);
+        return { filename: "images/" + item.filename };
+      });
+      browser.test.sendMessage("ready");
+    },
+  });
+  await prefixer.startup();
+  await prefixer.awaitMessage("ready");
+
+  const caller = makeCallerExtension();
+  await caller.startup();
+  await caller.awaitMessage("ready");
+
+  caller.sendMessage(TXT_URL);
+
+  const suggested = await prefixer.awaitMessage("suggested");
+  equal(
+    suggested,
+    `images/${TXT_FILE}`,
+    "listener built a relative path, not one containing the download directory"
+  );
+
+  await caller.awaitMessage("id");
+  await waitForDownloads();
+
+  const saved = fileInDownloadDir("images", TXT_FILE);
+  ok(saved.exists(), `File was saved to ${saved.path}`);
+  equal(saved.fileSize, TXT_LEN, "Saved file has the expected contents");
+  saved.remove(false);
+  fileInDownloadDir("images").remove(false);
+
+  await caller.unload();
+  await prefixer.unload();
 });
 
 // ---------------------------------------------------------------------------

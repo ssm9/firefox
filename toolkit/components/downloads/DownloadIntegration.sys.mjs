@@ -461,15 +461,28 @@ export var DownloadIntegration = {
    *                                filename).
    * @param {string|null} mimeType  MIME type of the download, if known.
    * @param {boolean} isPrivate     Whether this is a private-browsing download.
+   * @param {string|null} baseDir   Download directory that suggestions resolve
+   *                                against. Defaults to the parent of
+   *                                tentativePath when not given.
    * @returns {Promise<string>}     Resolves to the (possibly updated) path.
    */
-  async determineFilenameBeforeDialog(url, tentativePath, mimeType, isPrivate) {
+  async determineFilenameBeforeDialog(
+    url,
+    tentativePath,
+    mimeType,
+    isPrivate,
+    baseDir = null
+  ) {
     if (!this._determineFilenameCallbacks.size) {
       return tentativePath;
     }
     const syntheticDownload = {
       source: { url, isPrivate: !!isPrivate },
       target: { path: tentativePath, partFilePath: `${tentativePath}.part` },
+      // Suggestions are relative to the download directory, which is not
+      // necessarily the parent of tentativePath: a suggestion applied earlier
+      // may already have moved it into a subdirectory.
+      _filenameBaseDir: baseDir,
       _syntheticSerialized: {
         id: -1,
         url,
