@@ -11,6 +11,7 @@ var { XPCOMUtils } = ChromeUtils.importESModule(
 
 ChromeUtils.defineESModuleGetters(this, {
   BrowserUtils: "resource://gre/modules/BrowserUtils.sys.mjs",
+  DownloadIntegration: "resource://gre/modules/DownloadIntegration.sys.mjs",
   DownloadLastDir: "resource://gre/modules/DownloadLastDir.sys.mjs",
   DownloadPaths: "resource://gre/modules/DownloadPaths.sys.mjs",
   Downloads: "resource://gre/modules/Downloads.sys.mjs",
@@ -307,6 +308,7 @@ function internalSave(
   var saveMode = GetSaveModeForContentType(aContentType, aDocument);
 
   var file, sourceURI, saveAsType;
+  let filenameAlreadyDetermined = false;
   let contentPolicyType = Ci.nsIContentPolicy.TYPE_SAVEAS_DOWNLOAD;
   // Find the URI object for aURL and the FileName/Extension to use when saving.
   // FileName/Extension will be ignored if aChosenData supplied.
@@ -315,7 +317,7 @@ function internalSave(
     sourceURI = aChosenData.uri;
     saveAsType = kSaveAsType_Complete;
 
-    continueSave();
+    continueSave().catch(console.error);
   } else {
     var charset = null;
     if (aDocument) {
@@ -349,7 +351,7 @@ function internalSave(
       aOriginalURL || aReferrerInfo?.originalReferrer || sourceURI;
 
     promiseTargetFile(fpParams, aSkipPrompt, relatedURI)
-      .then(aDialogAccepted => {
+      .then(async aDialogAccepted => {
         if (!aDialogAccepted) {
           // Close the persist document to tear down the IPC actor
           // that otherwise prevents the content window from being
@@ -361,13 +363,14 @@ function internalSave(
 
         saveAsType = fpParams.saveAsType;
         file = fpParams.file;
+        filenameAlreadyDetermined = !!fpParams.filenameAlreadyDetermined;
 
-        continueSave();
+        await continueSave();
       })
       .catch(console.error);
   }
 
-  function continueSave() {
+  async function continueSave() {
     // XXX We depend on the following holding true in appendFiltersForContentType():
     // If we should save as a complete page, the saveAsType is kSaveAsType_Complete.
     // If we should save as text, the saveAsType is kSaveAsType_Text.
@@ -400,6 +403,22 @@ function internalSave(
 
     let sourceOriginalURI = aOriginalURL ? makeURI(aOriginalURL) : null;
 
+    // Callers that supplied their own target skip promiseTargetFile(), so the
+    // hook has not run yet. Download.start() is too late for it: the bytes go
+    // to the file chosen here and the Download object only mirrors it.
+    if (file && !filenameAlreadyDetermined) {
+      const newPath = await DownloadIntegration.determineFilenameBeforeDialog(
+        sourceURI.spec,
+        file.path,
+        aContentType ?? null,
+        isPrivate
+      );
+      filenameAlreadyDetermined = true;
+      if (newPath !== file.path) {
+        file = new FileUtils.File(newPath);
+      }
+    }
+
     var persistArgs = {
       sourceURI,
       sourceOriginalURI,
@@ -415,6 +434,7 @@ function internalSave(
       cookieJarSettings: aCookieJarSettings,
       isPrivate,
       saveCompleteCallback: aSaveCompleteCallback,
+      filenameAlreadyDetermined,
     };
 
     // Start the actual save process
@@ -470,6 +490,13 @@ function internalSave(
  */
 function internalPersist(persistArgs) {
   var persist = makeWebBrowserPersist();
+
+  // continueSave() already ran the filename hook against this transfer's
+  // target. Without this, Download.start() fires onDeterminingFilename a
+  // second time and applies the suggestion twice (images/images/pic.jpg).
+  if (persistArgs.filenameAlreadyDetermined) {
+    DownloadIntegration.markLauncherProcessed(persist);
+  }
 
   // Calculate persist flags.
   const nsIWBP = Ci.nsIWebBrowserPersist;
@@ -713,9 +740,33 @@ function promiseTargetFile(
     let dirExists = await IOUtils.exists(dirPath);
     let dir = new FileUtils.File(dirPath);
 
+    // Give onDeterminingFilename listeners a chance to redirect the download
+    // before either the auto-save path or the file picker is chosen, so the
+    // dialog opens at the suggested destination. Suggestions resolve against
+    // the download directory rather than the last-used one, which would
+    // otherwise nest each suggestion inside the previously organised folder.
+    let leafName = aFpP.fileInfo.fileName;
+    let suggestedDir = null;
+    if (dirExists) {
+      const tentativePath = PathUtils.join(dirPath, leafName);
+      const newPath = await DownloadIntegration.determineFilenameBeforeDialog(
+        aFpP.fileInfo.uri?.spec ?? aRelatedURI?.spec ?? "",
+        tentativePath,
+        aFpP.contentType ?? null,
+        PrivateBrowsingUtils.isWindowPrivate(window),
+        dirPath
+      );
+      aFpP.filenameAlreadyDetermined = true;
+      if (newPath !== tentativePath) {
+        suggestedDir = PathUtils.parent(newPath);
+        leafName = PathUtils.filename(newPath);
+      }
+    }
+
     if (useDownloadDir && dirExists) {
-      dir.append(aFpP.fileInfo.fileName);
-      aFpP.file = uniqueFile(dir);
+      let target = new FileUtils.File(suggestedDir ?? dirPath);
+      target.append(leafName);
+      aFpP.file = uniqueFile(target);
       return true;
     }
 
@@ -727,6 +778,13 @@ function promiseTargetFile(
     }
     if (file && (await IOUtils.exists(file.path))) {
       dir = file;
+      dirExists = true;
+    }
+
+    // A suggestion outranks the remembered directory, which is otherwise the
+    // folder a previous suggestion organised into.
+    if (suggestedDir) {
+      dir = new FileUtils.File(suggestedDir);
       dirExists = true;
     }
 
@@ -745,7 +803,7 @@ function promiseTargetFile(
 
     fp.displayDirectory = dir;
     fp.defaultExtension = aFpP.fileInfo.fileExt;
-    fp.defaultString = aFpP.fileInfo.fileName;
+    fp.defaultString = leafName;
     appendFiltersForContentType(
       fp,
       aFpP.contentType,
