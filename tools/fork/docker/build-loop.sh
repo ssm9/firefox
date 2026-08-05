@@ -660,10 +660,15 @@ publish_target() {
   # records a failed update.
   log "Publishing $target artifacts for $version"
   cp -f "$ARTIFACTS/firefox-$version.$target.complete.mar" "$dl_dir/" || return 1
+  # Anchored on the version, not a bare *.tar.xz. The staging directory is not
+  # emptied between releases under CI, so a bare glob copied every release's
+  # installers into every release's download directory -- 153.0.3 shipped with
+  # 153.0.1's archives sitting beside it, and the waste compounded per cycle.
+  # The trailing dot matters: it stops 153.0.1 from matching 153.0.11.
   case "$target" in
-    linux64)       cp -f "$ARTIFACTS"/*.tar.xz "$dl_dir/" 2>/dev/null || true ;;
-    win64)         cp -f "$ARTIFACTS"/*.zip "$dl_dir/" 2>/dev/null || true ;;
-    macos-*)       cp -f "$ARTIFACTS"/*.tar.gz "$dl_dir/" 2>/dev/null || true ;;
+    linux64)       cp -f "$ARTIFACTS/firefox-$version".*.tar.xz "$dl_dir/" 2>/dev/null || true ;;
+    win64)         cp -f "$ARTIFACTS/firefox-$version".*.zip "$dl_dir/" 2>/dev/null || true ;;
+    macos-*)       cp -f "$ARTIFACTS/firefox-$version".*.tar.gz "$dl_dir/" 2>/dev/null || true ;;
   esac
   sync
 
@@ -683,6 +688,65 @@ publish_target() {
   rm -rf "$staging"
   sync
   return 0
+}
+
+# Drop download directories for releases nothing is being offered any more.
+#
+# A release costs roughly 575 MB -- three installers, three MARs and the
+# Windows xpt archive -- and upstream ships one every few weeks, so keeping
+# every one of them fills the dataset at something like 12 GB a year for builds
+# nobody can be served. Only complete MARs are produced and the manifest names
+# exactly one of them, so nothing needs the older directories to construct an
+# update; they are kept only so a fresh install of a recent release is still
+# possible. FORK_KEEP_RELEASES=0 turns this off.
+prune_downloads() {
+  local dir="$WWW/downloads"
+  local keep="${FORK_KEEP_RELEASES:-3}"
+
+  [ -d "$dir" ] || return 0
+
+  case "$keep" in
+    ''|*[!0-9]*)
+      log "WARNING: FORK_KEEP_RELEASES=$keep is not a number; keeping everything"
+      return 0
+      ;;
+  esac
+
+  if [ "$keep" -eq 0 ]; then
+    log "FORK_KEEP_RELEASES=0; not pruning downloads"
+    return 0
+  fi
+
+  # sort -V so 153.0.10 sorts above 153.0.9, which a lexical sort would bury.
+  local versions=() v
+  while IFS= read -r v; do
+    [ -n "$v" ] && [ -d "$dir/$v" ] && versions+=("$v")
+  done < <(ls -1 "$dir" 2>/dev/null | sort -V)
+
+  local total="${#versions[@]}"
+  [ "$total" -gt "$keep" ] || return 0
+
+  # Never remove a release some manifest still points at. When one target fails
+  # to build, its manifest keeps advertising the last release that did, so the
+  # newest directory is not necessarily the only one in use -- win64 can still
+  # be offering two releases back while linux64 has moved on. Deleting that
+  # directory turns its next update check into a 404, which the client records
+  # as a failed update rather than retrying.
+  local referenced
+  referenced="$(find "$WWW/updates" -name update.xml -print0 2>/dev/null \
+    | xargs -0 -r sed -n 's|.*/downloads/\([^/]*\)/.*|\1|p' 2>/dev/null \
+    | sort -u)"
+
+  local i
+  for (( i = 0; i < total - keep; i++ )); do
+    v="${versions[$i]}"
+    if printf '%s\n' "$referenced" | grep -qxF -- "$v"; then
+      log "Keeping $v: a manifest still points at it"
+      continue
+    fi
+    log "Pruning $dir/$v"
+    rm -rf "${dir:?}/${v:?}"
+  done
 }
 
 # The install scripts, served beside the builds they install so a client is
@@ -803,10 +867,13 @@ $FORK_BRANCH and push. Reproduce by hand with: git -C $SRC cherry-pick \
       continue
     fi
 
+    # Version-anchored for the same reason as the publish side: dist/ keeps
+    # every archive it has ever produced, because only a clobber empties it and
+    # AUTOCLOBBER fires on the tree's CLOBBER file rather than on each build.
     case "$target" in
-      linux64)       cp -f "$FORK_OBJDIR"/dist/*.tar.xz "$ARTIFACTS"/ 2>/dev/null || true ;;
-      win64)         cp -f "$FORK_OBJDIR"/dist/*.zip "$ARTIFACTS"/ 2>/dev/null || true ;;
-      macos-*)       cp -f "$FORK_OBJDIR"/dist/*.tar.gz "$ARTIFACTS"/ 2>/dev/null || true ;;
+      linux64)       cp -f "$FORK_OBJDIR/dist/firefox-$version".*.tar.xz "$ARTIFACTS"/ 2>/dev/null || true ;;
+      win64)         cp -f "$FORK_OBJDIR/dist/firefox-$version".*.zip "$ARTIFACTS"/ 2>/dev/null || true ;;
+      macos-*)       cp -f "$FORK_OBJDIR/dist/firefox-$version".*.tar.gz "$ARTIFACTS"/ 2>/dev/null || true ;;
     esac
 
     metadata+=("$ARTIFACTS/$target.mar.json")
@@ -836,6 +903,10 @@ $FORK_BRANCH and push. Reproduce by hand with: git -C $SRC cherry-pick \
   fi
 
   echo "$version" > "$STATE/last-built"
+  # Only on a fully successful cycle. A partial one is exactly when a manifest
+  # is still pointing at an older release, and the retry that follows will
+  # prune once every target has caught up.
+  prune_downloads
   notify "Published Firefox $version for:$built"
   write_status "ok" "published" "$version"
   return 0
@@ -890,6 +961,14 @@ step_detect() {
   # stamped with the same value, and step_build runs once per target.
   mint_buildid
 
+  # run_once does this per cycle; the step path had no equivalent, so under CI
+  # the staging directory grew by a full set of installers and MARs every
+  # release and never shrank. Only on the build path: a cycle that publishes
+  # nothing has nothing to stage, and clearing it would discard artifacts a
+  # half-finished earlier run might still be asked to publish.
+  rm -rf "$ARTIFACTS"
+  mkdir -p "$ARTIFACTS"
+
   log "Firefox $version needs building (tag $tag)"
   write_status "building" "detected $version" "$version"
   return 0
@@ -942,6 +1021,8 @@ step_mar() {
   local target="${1:?usage: step mar <target>}"
   local objdir; objdir="$(ci_get "objdir-$target")"
   [ -n "$objdir" ] || { log "no object directory for $target; run build first"; return 1; }
+  local version; version="$(ci_get version)"
+  [ -n "$version" ] || { log "no version recorded; run detect first"; return 1; }
 
   # Recorded by whichever build produced a signmar that runs on this host. A
   # cross-compiled target's own copy is built for the target -- win64's is a
@@ -955,10 +1036,12 @@ step_mar() {
   mkdir -p "$ARTIFACTS"
   FORK_SRCDIR="$SRC" "$FORK/make_mar.sh" "$target" "$objdir" "$ARTIFACTS" || return 1
 
+  # Version-anchored: dist/ accumulates an archive per release built in that
+  # object directory, and a bare glob staged all of them.
   case "$target" in
-    linux64)       cp -f "$objdir"/dist/*.tar.xz "$ARTIFACTS"/ 2>/dev/null || true ;;
-    win64)         cp -f "$objdir"/dist/*.zip "$ARTIFACTS"/ 2>/dev/null || true ;;
-    macos-*)       cp -f "$objdir"/dist/*.tar.gz "$ARTIFACTS"/ 2>/dev/null || true ;;
+    linux64)       cp -f "$objdir/dist/firefox-$version".*.tar.xz "$ARTIFACTS"/ 2>/dev/null || true ;;
+    win64)         cp -f "$objdir/dist/firefox-$version".*.zip "$ARTIFACTS"/ 2>/dev/null || true ;;
+    macos-*)       cp -f "$objdir/dist/firefox-$version".*.tar.gz "$ARTIFACTS"/ 2>/dev/null || true ;;
   esac
 
   ci_set "mar-$target" ok
@@ -1017,6 +1100,10 @@ step_finalize() {
   fi
 
   echo "$version" > "$STATE/last-built"
+  # Only on a fully successful cycle. A partial one is exactly when a manifest
+  # is still pointing at an older release, and the retry that follows will
+  # prune once every target has caught up.
+  prune_downloads
   notify "Published Firefox $version for:$built"
   write_status "ok" "published" "$version"
   return 0

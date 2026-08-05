@@ -327,6 +327,23 @@ launcher does not contain the build ID its `application.ini` claims.
 Installs already stuck in that loop recover on their own once one consistent
 build is published; they are not left behind.
 
+### What is kept, and for how long
+
+A published release costs about 575 MB under `/www/downloads/<version>/` —
+three installers, three complete MARs and the Windows xpt archive — and
+upstream ships one every few weeks. Keeping all of them adds something like
+12 GB a year for builds nothing can be served from.
+
+`FORK_KEEP_RELEASES` (default 3) caps it. After a fully successful cycle the
+loop deletes the oldest directories beyond that, skipping any version a
+manifest still points at: when one target fails, its manifest keeps advertising
+the last release that built, so the newest directory is not necessarily the
+only one in use. Set it to `0` to keep everything.
+
+Nothing needs the older directories to construct an update — only complete MARs
+are produced and the manifest names exactly one of them. They exist so a fresh
+install of a recent release is still possible.
+
 ## Resource notes
 
 Firefox is a heavy build — expect hours on typical NAS hardware, and set
