@@ -363,7 +363,7 @@ function internalSave(
       relatedURI,
       aPreferSourceDirectory ? aOriginalURL || sourceURI : null
     )
-      .then(async aDialogAccepted => {
+      .then(aDialogAccepted => {
         if (!aDialogAccepted) {
           // Close the persist document to tear down the IPC actor
           // that otherwise prevents the content window from being
@@ -377,7 +377,7 @@ function internalSave(
         file = fpParams.file;
         filenameAlreadyDetermined = !!fpParams.filenameAlreadyDetermined;
 
-        await continueSave();
+        continueSave().catch(console.error);
       })
       .catch(console.error);
   }
