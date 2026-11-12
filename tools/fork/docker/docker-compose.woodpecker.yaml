@@ -101,6 +101,17 @@ services:
       FORK_UPDATE_SCHEME: ${FORK_UPDATE_SCHEME:-https}
       FORK_TARGETS: ${FORK_TARGETS:-linux64 win64 macos-aarch64}
 
+      # Same email alert as docker-compose.yaml's builder service -- notify()
+      # fires from every pipeline step (patch conflict, publish failure,
+      # finalize), so it needs to reach step containers the same way
+      # FORK_UPDATE_HOST etc. do above.
+      NOTIFY_URL: ${NOTIFY_URL:-}
+      NOTIFY_SMTP_URL: ${NOTIFY_SMTP_URL:-}
+      NOTIFY_EMAIL_FROM: ${NOTIFY_EMAIL_FROM:-}
+      NOTIFY_EMAIL_TO: ${NOTIFY_EMAIL_TO:-}
+      NOTIFY_SMTP_USER: ${NOTIFY_SMTP_USER:-}
+      NOTIFY_SMTP_PASS: ${NOTIFY_SMTP_PASS:-}
+
       # Set this when targets build concurrently, to roughly half the core
       # count. Left unset, each build sizes itself for the whole machine, so two
       # together oversubscribe the CPU and can coincide at peak memory -- two

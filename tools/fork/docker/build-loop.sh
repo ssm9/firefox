@@ -14,6 +14,16 @@ POLL_INTERVAL="${POLL_INTERVAL:-21600}"   # 6h
 BUILD_JOBS="${BUILD_JOBS:-}"
 NOTIFY_URL="${NOTIFY_URL:-}"
 
+# Optional email alert, sent alongside (not instead of) NOTIFY_URL. All three
+# of NOTIFY_SMTP_URL/NOTIFY_EMAIL_FROM/NOTIFY_EMAIL_TO must be set to enable
+# it; NOTIFY_SMTP_USER/NOTIFY_SMTP_PASS are only needed if the relay requires
+# auth.
+NOTIFY_SMTP_URL="${NOTIFY_SMTP_URL:-}"
+NOTIFY_EMAIL_FROM="${NOTIFY_EMAIL_FROM:-}"
+NOTIFY_EMAIL_TO="${NOTIFY_EMAIL_TO:-}"
+NOTIFY_SMTP_USER="${NOTIFY_SMTP_USER:-}"
+NOTIFY_SMTP_PASS="${NOTIFY_SMTP_PASS:-}"
+
 SRC=/src/firefox
 # Tooling lives in its own small checkout so $SRC can be a pure release-tag
 # tree. Folding it into the applied patch would mean this script could be
@@ -59,6 +69,32 @@ notify() {
     curl -fsS -m 20 -d "$msg" "$NOTIFY_URL" >/dev/null 2>&1 || \
       log "WARNING: notification POST failed"
   fi
+  if [ -n "$NOTIFY_SMTP_URL" ] && [ -n "$NOTIFY_EMAIL_FROM" ] \
+      && [ -n "$NOTIFY_EMAIL_TO" ]; then
+    notify_email "$msg" || log "WARNING: notification email failed"
+  fi
+}
+
+# Sends $1 as both subject and body over SMTP via curl, which speaks the
+# protocol directly -- no mail(1)/sendmail needed in the builder image.
+# NOTIFY_SMTP_URL takes curl's own scheme: smtps://host:465 for implicit TLS,
+# or smtp://host:587 for STARTTLS. curl does not upgrade smtp:// on its own,
+# so --ssl-reqd is added whenever auth is set -- credentials should never go
+# out in the clear, and Gmail and similar relays require it on 587 anyway.
+notify_email() {
+  local msg="$1"
+  local auth_args=()
+  if [ -n "$NOTIFY_SMTP_USER" ]; then
+    auth_args=(--user "$NOTIFY_SMTP_USER:$NOTIFY_SMTP_PASS" --ssl-reqd)
+  fi
+  printf 'From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n%s\r\n' \
+    "$NOTIFY_EMAIL_FROM" "$NOTIFY_EMAIL_TO" "Firefox fork build: $msg" "$msg" \
+    | curl -fsS -m 20 \
+        --url "$NOTIFY_SMTP_URL" \
+        --mail-from "$NOTIFY_EMAIL_FROM" \
+        --mail-rcpt "$NOTIFY_EMAIL_TO" \
+        "${auth_args[@]}" \
+        --upload-file - >/dev/null 2>&1
 }
 
 write_status() {

@@ -129,6 +129,11 @@ Optional environment overrides:
 
 - `BUILD_JOBS` — cap parallelism so builds do not eat every core
 - `NOTIFY_URL` — any URL accepting a POST body, e.g. an ntfy topic
+- `NOTIFY_SMTP_URL`, `NOTIFY_EMAIL_FROM`, `NOTIFY_EMAIL_TO` — email alert for
+  the same events, sent alongside `NOTIFY_URL`. `NOTIFY_SMTP_URL` is a curl
+  SMTP URL, e.g. `smtps://smtp.gmail.com:465`. Add `NOTIFY_SMTP_USER` and
+  `NOTIFY_SMTP_PASS` if the relay needs auth (a Gmail app password, for
+  example — not your account password).
 - `WEB_PORT` — if 8088 clashes
 - `FORK_TARGETS` — set to `linux64` to skip the Windows and macOS toolchain
   downloads for now
@@ -380,6 +385,10 @@ builders on the same object directories and two nginx containers on one port.
    `docker-compose.woodpecker.yaml` in its place, setting `WOODPECKER_HOST`,
    the OAuth client and secret, `WOODPECKER_ADMIN` (your GitHub username),
    `WOODPECKER_AGENT_SECRET`, and `BUILD_JOBS` at roughly half the core count.
+   The same `NOTIFY_URL`/`NOTIFY_SMTP_*` overrides from step 5 above apply here
+   too — `notify()` runs from inside each pipeline step, so a conflict,
+   publish failure, or finalize failure alerts the same way the polling loop
+   does.
 4. Proxy the Woodpecker port through nginx-proxy-manager, as a second proxy
    host alongside the update server.
 5. In the Woodpecker UI, enable the `ssm9/firefox` repository, mark it

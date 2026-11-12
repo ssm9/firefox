@@ -44,6 +44,12 @@ env_args=(
   -e FORK_UPDATE_SCHEME="${FORK_UPDATE_SCHEME:-https}"
   -e FORK_TARGETS="${FORK_TARGETS:-linux64 win64 macos-aarch64}"
   -e BUILD_JOBS="${BUILD_JOBS:-}"
+  -e NOTIFY_URL="${NOTIFY_URL:-}"
+  -e NOTIFY_SMTP_URL="${NOTIFY_SMTP_URL:-}"
+  -e NOTIFY_EMAIL_FROM="${NOTIFY_EMAIL_FROM:-}"
+  -e NOTIFY_EMAIL_TO="${NOTIFY_EMAIL_TO:-}"
+  -e NOTIFY_SMTP_USER="${NOTIFY_SMTP_USER:-}"
+  -e NOTIFY_SMTP_PASS="${NOTIFY_SMTP_PASS:-}"
 )
 
 # A build runs for hours, so it is detached: with -it a dropped SSH session

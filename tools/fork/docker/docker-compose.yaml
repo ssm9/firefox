@@ -76,6 +76,17 @@ services:
       # Optional: any URL that accepts a POST body, e.g. an ntfy topic.
       # Used for "new release building", "published", and failure notices.
       NOTIFY_URL: ${NOTIFY_URL:-}
+
+      # Optional email alert, sent alongside NOTIFY_URL for the same events.
+      # Set all three of NOTIFY_SMTP_URL/NOTIFY_EMAIL_FROM/NOTIFY_EMAIL_TO to
+      # enable it. NOTIFY_SMTP_URL is a curl SMTP URL, e.g.
+      # smtps://smtp.gmail.com:465. NOTIFY_SMTP_USER/NOTIFY_SMTP_PASS are only
+      # needed if the relay requires auth (a Gmail app password, for example).
+      NOTIFY_SMTP_URL: ${NOTIFY_SMTP_URL:-}
+      NOTIFY_EMAIL_FROM: ${NOTIFY_EMAIL_FROM:-}
+      NOTIFY_EMAIL_TO: ${NOTIFY_EMAIL_TO:-}
+      NOTIFY_SMTP_USER: ${NOTIFY_SMTP_USER:-}
+      NOTIFY_SMTP_PASS: ${NOTIFY_SMTP_PASS:-}
     volumes:
       - /mnt/tank/firefox-fork/src:/src
       - /mnt/tank/firefox-fork/state:/state

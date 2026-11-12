@@ -286,7 +286,9 @@ Apps > Discover Apps > Custom App > Install via YAML, using
 
 `FORK_UPDATE_HOST` and `FORK_UPDATE_SCHEME` default to the values compiled into
 `build/application.ini.in`, so they only need setting if you change the URL.
-Optionally set `WEB_PORT`, `BUILD_JOBS`, and `NOTIFY_URL`.
+Optionally set `WEB_PORT`, `BUILD_JOBS`, `NOTIFY_URL`, and
+`NOTIFY_SMTP_URL`/`NOTIFY_EMAIL_FROM`/`NOTIFY_EMAIL_TO` for an email alert on
+the same events (see DEPLOY.md).
 
 Replace every `/mnt/tank/...` path with your real dataset paths.
 
