@@ -311,6 +311,30 @@ ensure_bootstrap() {
   touch "$STATE/.bootstrapped"
 }
 
+# linux64 and win64 build as separate containers running at the same time (see
+# firefox-fork.yaml), both mounting the same /state volume -- including
+# MOZBUILD_STATE_PATH. Each target's `./mach build` lazily fetches whatever
+# toolchain artifacts (clang etc.) configure decides are not cached yet there.
+# On a cold cache both see "missing" at once and race to extract into the same
+# directory: one process's rmtree of the other's partial extraction surfaces
+# as a bare FileNotFoundError deep in tooltool.py, not a conflict git or this
+# script could catch.
+#
+# Configure resolves and fetches toolchains before any compilation starts, so
+# running it once here -- while patch is still the only thing running, and
+# before the parallel build steps ever see an empty cache -- warms the shared
+# cache instead of racing on it. linux64's mozconfig is enough: the host
+# compiler it fetches is the same one every other target also needs for its
+# own host-side build tools, regardless of what it cross-compiles for.
+prime_toolchains() {
+  cd "$SRC" || die "cannot enter $SRC"
+  local mozconfig="$FORK/mozconfigs/linux64"
+  [ -f "$mozconfig" ] || return 0
+  log "Priming the shared toolchain cache"
+  MOZCONFIG="$mozconfig" ./mach configure >/dev/null 2>&1 || \
+    log "WARNING: toolchain priming failed; the build step(s) will retry"
+}
+
 # The win64 build runs midl.exe under wine to compile the accessibility IDL.
 # wine needs a 32-bit runtime even to launch 64-bit executables; without it
 # every midl invocation fails with "/lib/ld-linux.so.2: could not open".
@@ -873,6 +897,7 @@ $FORK_BRANCH and push. Reproduce by hand with: git -C $SRC cherry-pick \
   check_url_consistency
   install_mar_cert
   ensure_bootstrap
+  prime_toolchains
   mint_buildid
 
   rm -rf "$ARTIFACTS"
@@ -1036,6 +1061,7 @@ Reproduce with: git -C $SRC cherry-pick \$(cat $STATE/fork-commit)"
   check_url_consistency
   install_mar_cert
   ensure_bootstrap
+  prime_toolchains
   return 0
 }
 
