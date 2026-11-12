@@ -213,26 +213,42 @@ signmar_runs_here() {
 # The search matters because targets build concurrently. Relying on the caller
 # to pass one assumes the native build finished first, which the pipeline does
 # not guarantee -- win64 can reach packaging while linux64 is still compiling.
+# Retry rather than fail on the first miss: linux64 is the only target that
+# can ever produce a host-native one, and a cold build can still have the
+# better part of an hour of compiling left when a faster cross-compile gets
+# here first.
+SIGNMAR_WAIT="${FORK_SIGNMAR_WAIT:-7200}"  # seconds
 SIGNMAR_BIN=""
-for candidate in "${FORK_SIGNMAR:-}" "$OBJDIR/dist/bin/signmar"; do
-  if [ -n "$candidate" ] && signmar_runs_here "$candidate"; then
-    SIGNMAR_BIN="$candidate"
-    break
-  fi
-done
-
-if [ -z "$SIGNMAR_BIN" ]; then
-  for candidate in "$(dirname "$OBJDIR")"/*/dist/bin/signmar; do
-    if signmar_runs_here "$candidate"; then
+waited=0
+while :; do
+  for candidate in "${FORK_SIGNMAR:-}" "$OBJDIR/dist/bin/signmar"; do
+    if [ -n "$candidate" ] && signmar_runs_here "$candidate"; then
       SIGNMAR_BIN="$candidate"
-      echo "Using signmar from $candidate (this target's is not host-native)"
       break
     fi
   done
-fi
+
+  if [ -z "$SIGNMAR_BIN" ]; then
+    for candidate in "$(dirname "$OBJDIR")"/*/dist/bin/signmar; do
+      if signmar_runs_here "$candidate"; then
+        SIGNMAR_BIN="$candidate"
+        echo "Using signmar from $candidate (this target's is not host-native)"
+        break
+      fi
+    done
+  fi
+
+  [ -n "$SIGNMAR_BIN" ] && break
+  [ "$waited" -ge "$SIGNMAR_WAIT" ] && break
+
+  echo "No host-native signmar yet; waiting for a concurrent build to produce" \
+    "one (${waited}s/${SIGNMAR_WAIT}s)..."
+  sleep 60
+  waited=$((waited + 60))
+done
 
 if [ -z "$SIGNMAR_BIN" ]; then
-  echo "ERROR: no signmar that runs on this host." >&2
+  echo "ERROR: no signmar that runs on this host after waiting ${SIGNMAR_WAIT}s." >&2
   echo "Searched $OBJDIR and its sibling object directories. A cross-compiled" >&2
   echo "target builds signmar for the target, so a native build must have" >&2
   echo "completed first, or FORK_SIGNMAR must name one." >&2
