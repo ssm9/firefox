@@ -262,7 +262,8 @@ echo "Packaging complete MAR for $TARGET ($VERSION / $BUILDID)"
 MAR="$MAR_BIN" \
 MOZ_PRODUCT_VERSION="$VERSION" \
 MAR_CHANNEL_ID="$FORK_MAR_CHANNEL_ID" \
-  "$TOPSRCDIR/tools/update-packaging/make_full_update.sh" "$UNSIGNED" "$APPDIR"
+  "$TOPSRCDIR/tools/update-packaging/make_full_update.sh" \
+  "$UNSIGNED" "$APPDIR" firefox
 
 echo "Signing MAR"
 NSS_DB="${FORK_NSS_DIR}"
